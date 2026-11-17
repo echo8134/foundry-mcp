@@ -1,0 +1,8 @@
+{
+  "id": "foundry-mcp",
+  "title": "Foundry MCP (local bridge)",
+  "description": "Connects the Gamemaster's client to a local MCP server on this machine so a model can work in the world. Reads, creates and updates scenes and draws walls and lights on them. Loopback only, fixed method list, no eval.",
+  "version": "0.3.0",
+  "compatibility": { "minimum": "14", "verified": "14" },
+  "esmodules": ["scripts/main.mjs"]
+}

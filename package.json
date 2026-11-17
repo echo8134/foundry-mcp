@@ -1,0 +1,31 @@
+{
+  "name": "foundry-mcp",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP server and Foundry module that let a model work inside a running Foundry world.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "token": "node src/print-token.ts",
+    "check": "biome ci && tsc --noEmit && npm test",
+    "fix": "biome check --write",
+    "test": "node --test test/*.test.ts",
+    "e2e": "node e2e/foundry.e2e.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.32.0",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "puppeteer-core": "^25.17.0",
+    "typescript": "^7.0.2"
+  }
+}
