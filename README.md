@@ -13,6 +13,7 @@ An MCP client such as Claude Code can:
 - read the stored field names and legal keys of the installed dnd5e
 - place tokens of world actors, change, move and delete tokens, and read a token's full stored data (dnd5e)
 - create an actor of any type, copy one from a compendium, bring an actor or a token's own actor to given data, and delete actors (dnd5e)
+- give an actor or a single token features, spells, weapons, a class, a species and a background as items, each with its activities (attack, damage, save, cast and the rest) and active effects, copy items from a compendium, and change or remove them (dnd5e)
 - create a scene, or bring an existing one to given settings
 - draw walls and doors from paths, and delete walls
 - sync walls and ambient lights to an exact set, without touching those placed by hand

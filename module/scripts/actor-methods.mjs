@@ -3,6 +3,7 @@ import { dropAt } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { fieldProblems } from "./field-check.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
+import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
 import { CONFIG_TABLES, configKeys, describeField, selectPath } from "./schema.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { folderRecords, storedAgain } from "./world.mjs";
@@ -80,31 +81,45 @@ export function actorFolderPath(actor) {
 }
 
 /**
- * The stored data of an actor that ensure_actor takes back as it is: without a key the model would not store again,
- * without a key outside a map's fixed keys, which dnd5e stores and then ignores (one pack actor has
- * system.skills.value), without the bridge's own flag on the prototype token, which Foundry's Assign Token copies
- * there from a bridge-made token (client/applications/sheets/token/prototype-config.mjs:278-292), and without the
- * prototype token of a token's actor, whose data has none.
+ * Stored data of an actor, an item or an effect that ensure_actor takes back as it is: without a key the model would
+ * not store again, and without a key outside a map's fixed keys, which dnd5e stores and then ignores (one pack actor
+ * has system.skills.value).
+ */
+function takenBack(document, stored, schemaFor = {}) {
+  const data = storedAgain(document, stored);
+  const schema = CONFIG[document.documentName].documentClass.schema;
+  for (const { path, problem } of fieldProblems(schema, data, { type: document.type, schemaFor })) {
+    if (problem === "key") dropAt(data, path);
+  }
+  return data;
+}
+
+/**
+ * An actor's own data without the bridge's own flag on the prototype token, which Foundry's Assign Token copies there
+ * from a bridge-made token (client/applications/sheets/token/prototype-config.mjs:278-292), and without the prototype
+ * token of a token's actor, whose data has none.
  */
 function storedForWrite(actor) {
   const { system, prototypeToken, ownership } = actor._source;
-  const data = storedAgain(actor, actor.isToken ? { system, ownership } : { system, prototypeToken, ownership });
-  for (const { path, problem } of fieldProblems(CONFIG.Actor.documentClass.schema, data, { type: actor.type })) {
-    if (problem === "key") dropAt(data, path);
-  }
+  const data = takenBack(actor, actor.isToken ? { system, ownership } : { system, prototypeToken, ownership });
   dropAt(data, `prototypeToken.flags.${FLAG_SCOPE}`);
   return data;
 }
 
-export async function getActor({ actor: ref, items = [] }) {
-  const actor = await resolveActor(ref);
-  const missing = items.filter((id) => !actor.items.has(id));
+function mustHave(actor, collection, ids, noun) {
+  const missing = ids.filter((id) => !collection.has(id));
   if (missing.length > 0) {
     throw new MethodError(
       "not_found",
-      `${actor.name} has no item with the id ${missing.join(", ")}. The item ids are in this tool's items list.`
+      `${actor.name} has no ${noun} with the id ${missing.join(", ")}. The ${noun} ids are in this tool's ${noun}s list.`
     );
   }
+}
+
+export async function getActor({ actor: ref, items = [], effects = [] }) {
+  const actor = await resolveActor(ref);
+  mustHave(actor, actor.items, items, "item");
+  mustHave(actor, actor.effects, effects, "effect");
   return {
     id: actor.id,
     uuid: actor.uuid,
@@ -116,8 +131,15 @@ export async function getActor({ actor: ref, items = [] }) {
     ...storedForWrite(actor),
     derived: derivedValues(actor.system),
     items: actor.items.map((item) => ({ id: item.id, name: item.name, type: item.type, managed: isManaged(item) })),
-    itemData: items.map((id) => actor.items.get(id)._source),
+    itemData: items.map((id) => {
+      const item = actor.items.get(id);
+      return takenBack(item, item._source, TYPED_ENTRY_SCHEMAS);
+    }),
     effects: actor.effects.map((effect) => ({ id: effect.id, name: effect.name, disabled: effect.disabled })),
+    effectData: effects.map((id) => {
+      const effect = actor.effects.get(id);
+      return takenBack(effect, effect._source);
+    }),
     // concreteOnly leaves out ephemeral tokens that are not stored in their scene (client/documents/actor.mjs:589-597).
     tokens: actor.pack
       ? []

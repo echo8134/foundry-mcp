@@ -140,8 +140,13 @@ describe("ensure_actor creating an actor", () => {
     ["an ownership level that is none", { ownership: { default: 9 } }, /refuses the data: .*ownership/],
     [
       "data the model refuses",
+      { system: { details: { cr: "high" } } },
+      /Foundry's actor model refuses the data: .*cr: must be a number/
+    ],
+    [
+      "a number outside its field's range, which Foundry would bring into it",
       { system: { details: { cr: -1 } } },
-      /Foundry's actor model refuses the data: .*cr: must be at least 0/
+      /system\.details\.cr: -1 would be stored as 0/
     ],
     [
       "a value Foundry would store as something else",

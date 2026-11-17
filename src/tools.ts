@@ -228,6 +228,48 @@ const TOKEN_ENTRY =
 // The module checks what these hold against the live data models, which the server cannot know.
 const storedData = (what: string) => z.record(z.string(), z.unknown()).optional().describe(what);
 
+// The module checks the other keys of an effect against the live effect schema.
+const effectEntrySchema = z.looseObject({
+  _id: nonBlank
+    .optional()
+    .describe("The effect's id, or a label, which always becomes the same id. An effect that is not there is created."),
+  name: nonBlank.optional().describe("Effect name, trimmed. Without _id, the bridge-made effect of exactly this name.")
+});
+
+const itemEntrySchema = z
+  .strictObject({
+    id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Id of an item of the actor, from get_actor. Omit to find the item by name and type."),
+    name: nonBlank
+      .optional()
+      .describe("Item name, trimmed. With id, its new name. With from, defaults to the source's."),
+    type: nonBlank
+      .optional()
+      .describe("Item type, for example feat, weapon, spell, class, race (a species) or background."),
+    from: nonBlank
+      .optional()
+      .describe(
+        "UUID of an item to copy when the item is created: Compendium.<pack>.Item.<id>, Item.<id>, or an item of an actor."
+      ),
+    img: nonBlank.nullable().optional().describe("Icon, a path or URL Foundry can load. null is none."),
+    system: storedData("Stored dnd5e data of the item type."),
+    flags: storedData("Flags by scope. flags.foundry-mcp is the bridge's own."),
+    effects: z.array(effectEntrySchema).optional().describe("Effects of this item, given like the actor's effects."),
+    remove: z
+      .array(nonBlank)
+      .optional()
+      .describe('Dot paths of entries of this item to delete, for example ["system.activities.bite"].'),
+    removeEffects: z.array(nonBlank).optional().describe("Ids or labels of effects of this item to delete.")
+  })
+  .refine(
+    (entry) =>
+      entry.id !== undefined || entry.from !== undefined || (entry.name !== undefined && entry.type !== undefined),
+    { message: "Give id, or name and type, or from." }
+  );
+
 const imageResultSchema = z.object({
   mimeType: z.string(),
   data: z.string(),
@@ -526,13 +568,16 @@ const SPECS: Record<Method, ToolSpec> = {
       "prototypeToken and ownership leave out a stored key that ensure_actor would refuse, such as a vehicle's " +
       "legacy ac.calc; a token's actor has no prototypeToken. derived holds the numbers " +
       "the sheet shows, most of them computed by dnd5e and not stored: ac, hp, prof, xp, level, init, spell {dc, attack}, abilities {mod, save} and skills " +
-      "{total, passive}, whatever the actor type has. items and effects are short lists; pass item ids as items to get " +
-      "their full stored data in itemData. tokens are the placed tokens of the actor. actor is a world actor id or a " +
+      "{total, passive}, whatever the actor type has. items and effects are short lists; pass item ids as items and " +
+      "effect ids as effects to get their full stored data in itemData and effectData. An itemData entry's name, img, " +
+      "system, flags and effects can be passed back in an items entry of ensure_actor with its _id as id, and an " +
+      "effectData entry as it is: unchanged they write nothing. tokens are the placed tokens of the actor. actor is a world actor id or a " +
       "UUID: Actor.<id>, Compendium.<pack>.Actor.<id>, or Scene.<id>.Token.<id>.Actor.<id>, the actor of an unlinked " +
       "token, whose data is the base actor merged with that token's own changes.",
     input: z.object({
       actor: nonBlank.describe("World actor id, or an actor UUID."),
-      items: z.array(z.string().min(1)).optional().describe("Ids of the actor's items to return in full.")
+      items: z.array(z.string().min(1)).optional().describe("Ids of the actor's items to return in full."),
+      effects: z.array(z.string().min(1)).optional().describe("Ids of the actor's effects to return in full.")
     })
   }),
   get_schema: defineTool({
@@ -621,6 +666,25 @@ const SPECS: Record<Method, ToolSpec> = {
       "by dot path: an entry of a keyed map (system.tools.thief) or a key below flags; a path with no entry is " +
       "ignored, an entry of a map with fixed keys goes back to its defaults (system.abilities.str to 10), and on a " +
       "token's actor only what that token changed can be removed. " +
+      "items adds or changes items and never deletes one. An entry with id is that item of the actor. Without id it " +
+      "is the bridge-made item of exactly that name and type: one is changed, none is created, several are refused, " +
+      "and so is a name that only an item made by hand has, with its id. from starts a new item as a copy and is not " +
+      "applied again; img, system and flags are stored item data (get_schema with document Item, and Activity for an " +
+      "entry of system.activities). A key of system.activities that is no 16-character id is a label, which always " +
+      "becomes the same id: the same call again changes that activity. A new activity needs type. For example " +
+      '{name: "Bite", type: "feat", system: {activities: {bite: {type: "attack", attack: {flat: true, bonus: "5", ' +
+      'type: {value: "melee", classification: "weapon"}}, damage: {includeBase: false, parts: [{number: 2, ' +
+      'denomination: 6, bonus: "3", types: ["piercing"]}]}, range: {value: "5", units: "ft"}}}}}. remove in an entry ' +
+      "deletes entries of that item (system.activities.bite). effects are the actor's own active effects, and inside " +
+      "an item entry that item's: stored ActiveEffect data, found by _id (an id or a label; an effect that is not " +
+      "there is created under it, and an activity of the same call names it in its effects as {_id}), or without " +
+      'it by name among the bridge-made ones. Their changes are system.changes [{key, type: "add", value: "2"}]. ' +
+      "removeItems and removeEffects delete by id and ignore ids that are not there. New items are created after the " +
+      "actor, as a drop on the sheet creates them, so dnd5e sets its item defaults, but no advancement runs: a class " +
+      "(system.levels), a species (type race) and a background are stored as given, so give the features they grant " +
+      "as items too, and a character's hit points. A copied spell keeps its system.prepared: give 1 (prepared) or 2 " +
+      "(always) for a spell the creature has ready. For a cast activity dnd5e adds a copy of its spell as an item of " +
+      "its own shortly after the call returns. On a token's actor, items and effects are written for that token only. " +
       'In dnd5e a fixed armor class is system.attributes.ac.calcs ["natural"] with ac.flat, speeds are ' +
       "formula texts under system.attributes.movement.speeds, a skill's value is its proficiency multiplier (0, 0.5, " +
       "1, 2), system.details.cr is a number (0.125, 0.25 and 0.5 for the fractions), a new npc given hp.max without " +
@@ -631,7 +695,10 @@ const SPECS: Record<Method, ToolSpec> = {
       "what it would store), an img that does not load. Returns {id, uuid, name, type, folder, created, changed (the " +
       "field paths whose stored value changed or was removed), unapplied (the field paths whose stored value is not " +
       "the one asked for; a hook or the system can put a path in both), derived (the numbers get_actor returns under " +
-      "that name, read after the write)}.",
+      "that name, read after the write)}, and for each of items, effects, removeItems and removeEffects that was " +
+      "given: items [{id, name, type, created, changed, unapplied, effects, removedEffects}] and effects [{id, name, " +
+      "created, changed, unapplied}] with paths inside the item or effect, and the counts removedItems and " +
+      "removedEffects. An entry Foundry created nothing for has error in place of its id.",
     input: z
       .strictObject({
         actor: nonBlank
@@ -665,7 +732,14 @@ const SPECS: Record<Method, ToolSpec> = {
         remove: z
           .array(nonBlank)
           .optional()
-          .describe('Dot paths of entries to delete, for example ["system.tools.thief", "flags.world.note"].')
+          .describe('Dot paths of entries to delete, for example ["system.tools.thief", "flags.world.note"].'),
+        items: z.array(itemEntrySchema).optional().describe("Items to create or change."),
+        removeItems: z.array(z.string().min(1)).optional().describe("Ids of items of the actor to delete."),
+        effects: z.array(effectEntrySchema).optional().describe("The actor's own active effects to create or change."),
+        removeEffects: z
+          .array(nonBlank)
+          .optional()
+          .describe("Ids or labels of the actor's own active effects to delete.")
       })
       .refine((args) => args.actor !== undefined || args.name !== undefined, {
         message: "Give a name, or an actor to change."

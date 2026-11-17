@@ -77,13 +77,14 @@ export function checkUpdate(document, update) {
  * key on every cleaning, and its vehicle model puts one back as a default (`system.attributes.ac.calc`, dnd5e
  * module/data/actor/templates/attributes.mjs:185-212, module/data/actor/vehicle.mjs:42-45): such a key is stored, and
  * refused when it is given back. Without strict the dry run cleans the copy and does not throw for stored data the
- * model would refuse.
+ * model would refuse. The copy is Foundry's own: measured, structuredClone refuses the stored data of some items (a
+ * spell copied from a compendium) with a DataCloneError.
  * @param {{validate: (options: object) => boolean}} document
- * @param {Record<string, unknown>} stored a part of the document's `_source`
+ * @param {Record<string, unknown>} stored the document's `_source`, or a part of it
  * @returns {Record<string, unknown>}
  */
 export function storedAgain(document, stored) {
-  const cleaned = structuredClone(stored);
+  const cleaned = foundry.utils.deepClone(stored);
   document.validate({ changes: cleaned, clean: { ...AS_AN_UPDATE, copy: false }, strict: false });
   return /** @type {Record<string, unknown>} */ (pickData(stored, cleaned));
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  elementIdArrays,
   explainFieldProblems,
   explainRemovalProblems,
   fieldProblems,
@@ -10,10 +11,12 @@ import {
 import {
   ActivitiesField,
   AdvancementDataField,
+  AppliedBehaviorField,
   ArrayField,
   BooleanField,
   DataField,
   DocumentFlagsField,
+  DocumentIdField,
   DocumentOwnershipField,
   EmbeddedCollectionField,
   EmbeddedDataField,
@@ -250,6 +253,102 @@ describe("fieldProblems below a dnd5e TypeDataField5e", () => {
     assert.deepEqual(fieldProblems(item, data, { schemaFor: { TypeDataField5e: schemaFor.TypeDataField5e } }), [
       { path: "advancement.hp.configuration", problem: "model", type: undefined }
     ]);
+  });
+});
+
+describe("fieldProblems below a behavior of a dnd5e activity", () => {
+  const terrain = new SchemaField({ multiplier: new NumberField() });
+  const behavior = new AppliedBehaviorField({
+    type: new StringField(),
+    name: new StringField(),
+    config: new TypeDataField5e()
+  });
+  const activity = new SchemaField({ type: new StringField(), behaviors: new ArrayField(behavior) });
+  const item = new SchemaField({ activities: new MappingField(new TypeDataField5e()) });
+  const schemaFor = {
+    TypeDataField5e: (entry: any, _field: unknown, heldType?: string) => {
+      if (heldType !== undefined) return heldType === "difficultTerrain" ? terrain : undefined;
+      return entry?.type === "attack" ? activity : undefined;
+    }
+  };
+  const withBehaviors = (behaviors: unknown[]) => ({ activities: { bite: { type: "attack", behaviors } } });
+
+  it("checks a behavior's config against the data model of the behavior's own type", () => {
+    const data = withBehaviors([
+      { type: "difficultTerrain", name: "Mud", config: { multiplier: 3 } },
+      { type: "difficultTerrain", config: { speed: 3 } }
+    ]);
+    assert.deepEqual(fieldProblems(item, data, { schemaFor }), [
+      { path: "activities.bite.behaviors.1.config.speed", problem: "unknown" }
+    ]);
+  });
+
+  it("refuses the config of a behavior whose type has no data model, or that names none", () => {
+    const data = withBehaviors([{ type: "ghost", config: { any: 1 } }, { config: { any: 1 } }]);
+    assert.deepEqual(fieldProblems(item, data, { schemaFor }), [
+      { path: "activities.bite.behaviors.0.config", problem: "model", type: "ghost" },
+      { path: "activities.bite.behaviors.1.config", problem: "model", type: undefined }
+    ]);
+  });
+
+  it("does not hand a behavior's type on to the entries beside it or below its config", () => {
+    const nested = new SchemaField({ multiplier: new NumberField(), inner: new TypeDataField5e() });
+    const seen: unknown[] = [];
+    const tracing = {
+      TypeDataField5e: (entry: any, _field: unknown, heldType?: string) => {
+        seen.push(heldType);
+        if (heldType === "difficultTerrain") return nested;
+        return entry?.type === "attack" ? activity : undefined;
+      }
+    };
+    const data = {
+      activities: {
+        bite: { type: "attack", behaviors: [{ type: "difficultTerrain", config: { inner: { type: "attack" } } }] },
+        claw: { type: "attack" }
+      }
+    };
+    assert.deepEqual(fieldProblems(item, data, { schemaFor: tracing }), []);
+    assert.deepEqual(seen, [undefined, "difficultTerrain", undefined, undefined]);
+  });
+});
+
+describe("elementIdArrays", () => {
+  const generated = () => new DocumentIdField({ initial: () => "newid00000000001" });
+  const schema = new SchemaField({
+    changes: new ArrayField(new SchemaField({ _id: generated(), key: new StringField() })),
+    references: new ArrayField(new SchemaField({ _id: new DocumentIdField({ initial: null }) })),
+    parts: new ArrayField(new SchemaField({ number: new NumberField() })),
+    tags: new SetField(new StringField()),
+    system: new TypeDataField({ documentName: "Item" }),
+    activities: new MappingField(new TypeDataField5e())
+  });
+  const activity = new SchemaField({
+    type: new StringField(),
+    profiles: new ArrayField(
+      new SchemaField({ _id: generated(), groups: new ArrayField(new SchemaField({ _id: generated() })) })
+    )
+  });
+  const schemaFor = { TypeDataField5e: () => activity };
+
+  it("names the given lists whose elements are each given an id of their own, at any depth", () => {
+    const data = {
+      changes: [{ key: "a" }],
+      references: [{ _id: "x" }],
+      parts: [{ number: 1 }],
+      tags: ["a"],
+      activities: { bite: { type: "summon", profiles: [{ groups: [{}] }, { groups: [] }] } }
+    };
+    assert.deepEqual(elementIdArrays(schema, data, { type: "feat", schemaFor }), [
+      "changes",
+      "activities.bite.profiles",
+      "activities.bite.profiles.0.groups",
+      "activities.bite.profiles.1.groups"
+    ]);
+  });
+
+  it("names no list the data does not give, and none where the value is no list", () => {
+    assert.deepEqual(elementIdArrays(schema, { changes: "all", parts: [] }, { type: "feat", schemaFor }), []);
+    assert.deepEqual(elementIdArrays(schema, {}, { type: "feat" }), []);
   });
 });
 

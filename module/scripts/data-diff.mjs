@@ -306,6 +306,46 @@ export function dropAt(data, path) {
 }
 
 /**
+ * Follows a dot path through own keys and through the indexes of lists.
+ * @param {unknown} data
+ * @param {string} path
+ * @returns {unknown} the value at the path, undefined where the data has none
+ */
+function valueAt(data, path) {
+  let value = data;
+  for (const key of path.split(".")) {
+    if (Array.isArray(value)) value = value[Number(key)];
+    else value = own(value, key);
+  }
+  return value;
+}
+
+/**
+ * Gives each element of the named lists that has no `_id` the one of the stored element in its place, or else a new
+ * one. Without it Foundry's cleaning makes up another id on every call, and no two calls would ask for the same list.
+ * An id that another element of the given list names is not given twice.
+ * @param {Record<string, unknown>} given changed in place
+ * @param {readonly string[]} paths the dot paths of the lists whose elements each carry an `_id`
+ * @param {unknown} stored the stored data the given data is to change, or the data a new document starts from
+ * @param {() => string} newId
+ */
+export function giveElementIds(given, paths, stored, newId) {
+  for (const path of paths) {
+    const list = valueAt(given, path);
+    if (!Array.isArray(list)) continue;
+    const before = valueAt(stored, path);
+    const taken = new Set(list.map((element) => own(element, "_id")));
+    for (const [index, element] of list.entries()) {
+      if (!isPlainObject(element) || element._id !== undefined) continue;
+      const kept = Array.isArray(before) ? own(before[index], "_id") : undefined;
+      const id = typeof kept === "string" && !taken.has(kept) ? kept : newId();
+      taken.add(id);
+      put(element, "_id", id);
+    }
+  }
+}
+
+/**
  * @param {Asked} asked
  * @param {unknown} stored
  * @param {unknown} deletion the value that makes Foundry delete a key when an update holds it

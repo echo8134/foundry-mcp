@@ -520,6 +520,68 @@ describe("MCP tools", () => {
     );
   });
 
+  it("sends the items and effects of ensure_actor to the bridge as given, with their names trimmed", async () => {
+    const { client, calls } = await connect(() => ({}));
+    const args = {
+      actor: "a1",
+      items: [
+        {
+          name: " Bite ",
+          type: "feat",
+          system: { activities: { bite: { type: "attack", anything: ["the", "module", "checks"] } } },
+          flags: { world: { note: "x" } },
+          effects: [{ _id: "poison", name: " Poisoned ", system: { changes: [] }, anything: 1 }],
+          remove: ["system.activities.old"],
+          removeEffects: ["old"]
+        },
+        { id: "i1", img: null },
+        { from: "Compendium.dnd5e.spells24.Item.abc" }
+      ],
+      removeItems: ["i2"],
+      effects: [{ name: "Rage", disabled: true }],
+      removeEffects: ["rage"]
+    };
+    assert.notEqual((await client.callTool({ name: "ensure_actor", arguments: args })).isError, true);
+    const sent = structuredClone(args);
+    sent.items[0]!.name = "Bite";
+    sent.items[0]!.effects![0]!.name = "Poisoned";
+    assert.deepEqual(calls[0]!.params, sent);
+    await client.callTool({ name: "get_actor", arguments: { actor: "a1", items: ["i1"], effects: ["e1"] } });
+    assert.deepEqual(calls[1]!.params, { actor: "a1", items: ["i1"], effects: ["e1"] });
+  });
+
+  it("tells a caller of ensure_actor how items, activities and effects are found and what dnd5e does with them", async () => {
+    const { client } = await connect(() => ({}));
+    const { tools } = await client.listTools();
+    const description = (name: string) => tools.find((t) => t.name === name)!.description ?? "";
+    const ensure = description("ensure_actor");
+    for (const said of [
+      /items adds or changes items and never deletes one/,
+      /bridge-made item of exactly that name and type: one is changed, none is created, several are refused/,
+      /a name that only an item made by hand has, with its id/,
+      /from starts a new item as a copy and is not applied again/,
+      /that is no 16-character id is a label, which always becomes the same id/,
+      /A new activity needs type/,
+      /range: \{value: "5", units: "ft"\}/,
+      /remove in an entry deletes entries of that item \(system\.activities\.bite\)/,
+      /an activity of the same call names it in its effects as \{_id\}/,
+      /system\.changes \[\{key, type: "add", value: "2"\}\]/,
+      /removeItems and removeEffects delete by id and ignore ids that are not there/,
+      /no advancement runs/,
+      /system\.prepared: give 1 \(prepared\) or 2 \(always\)/,
+      /dnd5e adds a copy of its spell as an item of its own shortly after the call returns/,
+      /On a token's actor, items and effects are written for that token only/,
+      /An entry Foundry created nothing for has error in place of its id/
+    ]) {
+      assert.match(ensure, said);
+    }
+    assert.match(
+      description("get_actor"),
+      /effect ids as effects to get their full stored data in itemData and effectData/
+    );
+    assert.match(description("get_actor"), /passed back in an items entry of ensure_actor with its _id as id/);
+  });
+
   it("trims an actor's name and the names of its folder path before they reach the bridge", async () => {
     const { client, calls } = await connect(() => ({}));
     await client.callTool({
@@ -537,10 +599,34 @@ describe("MCP tools", () => {
       /Give a name, or an actor to change/
     ],
     [
-      "ensure_actor with an input it does not have, such as items",
+      "ensure_actor with an input it does not have",
       "ensure_actor",
-      { name: "Bandit", type: "npc", items: [{ name: "Sword", type: "weapon" }] },
-      /Unrecognized key: "items"/
+      { name: "Bandit", type: "npc", spells: [{ name: "Fire Bolt" }] },
+      /Unrecognized key: "spells"/
+    ],
+    [
+      "ensure_actor with an item entry that names no item",
+      "ensure_actor",
+      { name: "Bandit", items: [{ name: "Sword" }] },
+      /Give id, or name and type, or from/
+    ],
+    [
+      "ensure_actor with an item entry that has a key it does not take",
+      "ensure_actor",
+      { name: "Bandit", items: [{ name: "Sword", type: "weapon", sort: 5 }] },
+      /Unrecognized key: "sort"/
+    ],
+    [
+      "ensure_actor with an effect whose name is blank",
+      "ensure_actor",
+      { name: "Bandit", effects: [{ name: " " }] },
+      /at effects\[0\]\.name$/
+    ],
+    [
+      "ensure_actor with items that are no list",
+      "ensure_actor",
+      { name: "Bandit", items: { name: "Sword", type: "weapon" } },
+      /at items$/
     ],
     [
       "ensure_actor with system data that is no object",

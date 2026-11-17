@@ -1578,6 +1578,466 @@ try {
       .catch((e) => console.log(`cleanup: actor folder delete failed: ${e.message}`));
   }
 
+  const itemFolder = `foundry-mcp e2e items ${Date.now()}`;
+  try {
+    const packs = await page.evaluate(async () => {
+      const first = async (pack, type) => {
+        const index = await game.packs.get(pack).getIndex();
+        return index.find((entry) => entry.type === type)?.uuid ?? null;
+      };
+      return {
+        spell: await first("dnd5e.spells24", "spell"),
+        klass: await first("dnd5e.classes24", "class"),
+        species: await first("dnd5e.origins24", "race"),
+        background: await first("dnd5e.origins24", "background")
+      };
+    });
+    const acBonus = (value) => ({ key: "system.attributes.ac.bonus", type: "add", value });
+    const hound = {
+      name: "e2e hound",
+      type: "npc",
+      folder: [itemFolder],
+      system: { attributes: { hp: { max: 30 } }, details: { cr: 1 } },
+      items: [
+        {
+          name: "Keen Smell",
+          type: "feat",
+          system: { description: { value: "<p>Sharp<br />nose &mdash; always</p>" } }
+        },
+        {
+          name: "Bite",
+          type: "feat",
+          system: {
+            activities: {
+              bite: {
+                type: "attack",
+                activation: { type: "action" },
+                attack: { flat: true, bonus: "5", type: { value: "melee", classification: "weapon" } },
+                damage: {
+                  includeBase: false,
+                  parts: [{ number: 2, denomination: 6, bonus: "3", types: ["piercing"] }]
+                },
+                range: { value: "5", units: "ft" },
+                description: { value: "<p>Jaws<br />snap</p>" }
+              }
+            }
+          }
+        },
+        {
+          name: "Fire Breath",
+          type: "feat",
+          system: {
+            uses: { max: "1", recovery: [{ period: "recharge", formula: "5", type: "recoverAll" }] },
+            activities: {
+              breath: {
+                type: "save",
+                save: { ability: ["dex"], dc: { calculation: "", formula: "13" } },
+                damage: { onSave: "half", parts: [{ number: 4, denomination: 6, types: ["fire"] }] },
+                consumption: { targets: [{ type: "itemUses", target: "", value: "1" }] },
+                effects: [{ _id: "burning" }]
+              }
+            }
+          },
+          effects: [{ _id: "burning", name: "Burning", system: { changes: [acBonus("-1")] } }]
+        },
+        { from: packs.spell, system: { prepared: 2 } }
+      ],
+      effects: [
+        {
+          _id: "pack fury",
+          name: "Pack Fury",
+          description: "<p>Howls<br />loudly</p>",
+          system: { changes: [acBonus("1")] }
+        }
+      ]
+    };
+    const quiet = (entries) => entries.map((entry) => [entry.created, entry.changed, entry.unapplied]);
+    const allQuiet = (count) => Array.from({ length: count }, () => [false, [], []]);
+    const stored = (actorRef) =>
+      page.evaluate(async (ref) => JSON.stringify((await fromUuid(ref)).toObject()), actorRef);
+    let houndId;
+    let ids;
+    let biteActivity;
+    await check(
+      "ensure_actor creates an npc with a trait, a fixed-bonus attack, a recharge save with an effect, a copied spell and an effect of its own",
+      async () => {
+        assert(packs.spell, "dnd5e.spells24 has no spell");
+        const result = await tool(client, "ensure_actor", hound);
+        houndId = result.id;
+        same([result.created, result.unapplied], [true, []], "actor");
+        same(
+          result.items.map((item) => [item.type, item.created, item.unapplied]),
+          [
+            ["feat", true, []],
+            ["feat", true, []],
+            ["feat", true, []],
+            ["spell", true, []]
+          ],
+          "items"
+        );
+        same(quiet(result.effects), [[true, ["name", "description", "system.changes"], []]], "the actor's effect");
+        same(quiet(result.items[2].effects), [[true, ["name", "system.changes"], []]], "the item's effect");
+        ids = Object.fromEntries(result.items.map((item) => [item.name, item.id]));
+        const read = await tool(client, "get_actor", { actor: houndId, items: result.items.map((item) => item.id) });
+        const [smell, bite, breath, spell] = read.itemData;
+        const [[biteKey, attack]] = Object.entries(bite.system.activities);
+        biteActivity = biteKey;
+        assert(/^[a-zA-Z0-9]{16}$/.test(biteKey), `the activity key is ${biteKey}`);
+        same(
+          [attack._id, attack.type, attack.attack.bonus, attack.damage.parts.length, attack.range.value],
+          [biteKey, "attack", "5", 1, "5"],
+          "the attack"
+        );
+        same(
+          [smell.system.type.value, smell.flags["foundry-mcp"], smell.system.description.value.includes("<br>")],
+          ["monster", { managed: true }, true],
+          "the trait, with the type dnd5e gives a feature created on an npc"
+        );
+        const [save] = Object.values(breath.system.activities);
+        same(
+          [save.effects.map((effect) => effect._id), breath.system.uses.recovery[0].period, save.save.dc.formula],
+          [[breath.effects[0]._id], "recharge", "13"],
+          "the save, its effect and its recharge"
+        );
+        same(
+          [spell.type, spell.system.prepared, spell._stats.compendiumSource, spell.flags["foundry-mcp"]],
+          ["spell", 2, packs.spell, { managed: true }],
+          "the copied spell"
+        );
+        same(
+          read.effects.map((effect) => effect.name),
+          ["Pack Fury"],
+          "the actor's effects"
+        );
+        const labels = await page.evaluate(
+          (actor, item, activity) => {
+            const one = game.actors.get(actor).items.get(item).system.activities.get(activity);
+            return [one.labels.toHit, one.labels.damage.map((part) => part.formula)];
+          },
+          houndId,
+          ids.Bite,
+          biteKey
+        );
+        same(labels, ["+5", ["2d6 + 3"]], "what the sheet shows for the attack");
+      }
+    );
+
+    await check("ensure_actor run again with the same items and effects changes nothing and adds none", async () => {
+      const before = await stored(`Actor.${houndId}`);
+      const again = await tool(client, "ensure_actor", hound);
+      same([again.created, again.changed, again.unapplied], [false, [], []], "actor");
+      same(quiet(again.items), allQuiet(4), "items");
+      same(quiet(again.effects), allQuiet(1), "effects");
+      same(quiet(again.items[2].effects), allQuiet(1), "the item's effect");
+      same(await stored(`Actor.${houndId}`), before, "stored data");
+    });
+
+    await check("ensure_actor takes back the item and effect data get_actor returns, and writes nothing", async () => {
+      const before = await stored(`Actor.${houndId}`);
+      const effectIds = (await tool(client, "get_actor", { actor: houndId })).effects.map((effect) => effect.id);
+      const read = await tool(client, "get_actor", { actor: houndId, items: Object.values(ids), effects: effectIds });
+      const back = await tool(client, "ensure_actor", {
+        actor: houndId,
+        items: read.itemData.map(({ _id, name, img, system, flags, effects }) => ({
+          id: _id,
+          name,
+          img,
+          system,
+          flags,
+          effects
+        })),
+        effects: read.effectData
+      });
+      same(quiet(back.items), allQuiet(4), "items");
+      same(quiet(back.effects), allQuiet(1), "effects");
+      same(await stored(`Actor.${houndId}`), before, "stored data");
+    });
+
+    await check(
+      "ensure_actor changes an attack bonus through its label, deletes an activity with remove, and removes an item",
+      async () => {
+        const stronger = { name: "Bite", type: "feat", system: { activities: { bite: { attack: { bonus: "7" } } } } };
+        const changed = await tool(client, "ensure_actor", { actor: houndId, items: [stronger] });
+        same(quiet(changed.items), [[false, [`system.activities.${biteActivity}.attack.bonus`], []]], "the bonus");
+        const toHit = await page.evaluate(
+          (actor, item, activity) =>
+            game.actors.get(actor).items.get(item).system.activities.get(activity).labels.toHit,
+          houndId,
+          ids.Bite,
+          biteActivity
+        );
+        same(toHit, "+7", "what the sheet shows");
+        const cut = { name: "Fire Breath", type: "feat", remove: ["system.activities.breath"] };
+        const removed = await tool(client, "ensure_actor", { actor: houndId, items: [cut] });
+        same(removed.items[0].changed.length, 1, "the removed activity");
+        same(removed.items[0].unapplied, [], "unapplied");
+        same((await tool(client, "ensure_actor", { actor: houndId, items: [cut] })).items[0].changed, [], "repeat");
+        const gone = await tool(client, "ensure_actor", {
+          actor: houndId,
+          removeItems: [ids["Keen Smell"], "nothingHere000001"],
+          removeEffects: ["no such effect"]
+        });
+        same([gone.removedItems, gone.removedEffects], [1, 0], "removed");
+        const left = await page.evaluate((actor) => {
+          const document = game.actors.get(actor);
+          const breath = document.items.getName("Fire Breath");
+          return [document.items.map((item) => item.name).sort(), breath.system.activities.size];
+        }, houndId);
+        same([left[0].includes("Keen Smell"), left[0].length, left[1]], [false, 3, 0], "what is left");
+      }
+    );
+
+    await check("ensure_actor refuses a fault in one of several items before anything is written", async () => {
+      const before = await stored(`Actor.${houndId}`);
+      const refuses = (entry, pattern) =>
+        assertRejects(
+          tool(client, "ensure_actor", {
+            actor: houndId,
+            name: "e2e renamed",
+            items: [{ name: "Howl", type: "feat" }, entry]
+          }),
+          pattern
+        );
+      await refuses(
+        { name: "Bite", type: "feat", system: { activities: { bite: { range: { reach: 5 } } } } },
+        /items\[1\]: No such field: system\.activities\.\w{16}\.range\.reach/
+      );
+      await refuses(
+        { name: "Bite", type: "feat", system: { activities: { bite: { type: "save" } } } },
+        /this activity is of the type attack, and keeps it/
+      );
+      await refuses(
+        { name: "Claw", type: "feat", system: { activities: { claw: { attack: {} } } } },
+        /a new activity needs a type, one of attack, cast, check/
+      );
+      await refuses(
+        { name: "Bite", type: "feat", system: { uses: { spent: "lots" } } },
+        /items\[1\]: Foundry's item model refuses the data/
+      );
+      await refuses({ id: "nothingHere000001" }, /items\[1\]: e2e hound has no item with the id nothingHere000001/);
+      await refuses(
+        { name: "Bite", type: "weapon", from: "Actor.nothing" },
+        /Nothing exists at the UUID Actor\.nothing/
+      );
+      same(await stored(`Actor.${houndId}`), before, "stored data");
+    });
+
+    await check(
+      "a cast activity gets its spell copy from dnd5e, and the next call takes the copy for no item of its own",
+      async () => {
+        const wand = {
+          name: "Wand",
+          type: "feat",
+          system: { activities: { zap: { type: "cast", spell: { uuid: packs.spell } } } }
+        };
+        const made = await tool(client, "ensure_actor", { actor: houndId, items: [wand] });
+        same(
+          quiet(made.items).map(([created, , unapplied]) => [created, unapplied]),
+          [[true, []]],
+          "the wand"
+        );
+        const copies = () =>
+          page.evaluate(
+            (actor) =>
+              game.actors
+                .get(actor)
+                .items.filter((item) => item.flags.dnd5e?.cachedFor)
+                .map((item) => [item.type, item._stats.compendiumSource, item.flags["foundry-mcp"]?.managed ?? null]),
+            houndId
+          );
+        const copy = await eventually(async () => {
+          const found = await copies();
+          return found.length === 1 ? found : null;
+        }, "the spell copy of the cast activity");
+        same(copy, [["spell", packs.spell, null]], "the copy dnd5e made");
+        const count = await page.evaluate((actor) => game.actors.get(actor).items.size, houndId);
+        const again = await tool(client, "ensure_actor", {
+          actor: houndId,
+          items: [wand, { from: packs.spell, system: { prepared: 2 } }]
+        });
+        same(quiet(again.items), allQuiet(2), "the wand and the spell given with from");
+        same(await page.evaluate((actor) => game.actors.get(actor).items.size, houndId), count, "items");
+      }
+    );
+
+    await check(
+      "a character takes a class, a species and a background copied from the compendiums, and no dialog opens",
+      async () => {
+        assert(
+          packs.klass && packs.species && packs.background,
+          `missing in the compendiums: ${JSON.stringify(packs)}`
+        );
+        const windows = () => page.evaluate(() => foundry.applications.instances.size);
+        const open = await windows();
+        const hero = {
+          name: "e2e adventurer",
+          type: "character",
+          folder: [itemFolder],
+          system: { attributes: { hp: { value: 24, max: 24 } } },
+          items: [{ from: packs.klass, system: { levels: 3 } }, { from: packs.species }, { from: packs.background }]
+        };
+        const result = await tool(client, "ensure_actor", hero);
+        same(
+          result.items.map((item) => [item.type, item.created, item.unapplied]),
+          [
+            ["class", true, []],
+            ["race", true, []],
+            ["background", true, []]
+          ],
+          "items"
+        );
+        same([result.derived.level, result.derived.prof, result.derived.hp.value], [3, 2, 24], "level and hit points");
+        const details = await eventually(async () => {
+          const found = await page.evaluate((id) => {
+            const { race, background, originalClass } = game.actors.get(id)._source.system.details;
+            return [race, background, originalClass];
+          }, result.id);
+          return found.every(Boolean) ? found : null;
+        }, "dnd5e to note the species, the background and the class on the character");
+        same(details, [result.items[1].id, result.items[2].id, result.items[0].id], "what dnd5e noted");
+        same(await windows(), open, "open windows");
+        const again = await tool(client, "ensure_actor", hero);
+        same([again.created, again.changed], [false, []], "repeat");
+        same(quiet(again.items), allQuiet(3), "repeat of the items");
+        const second = await tool(client, "ensure_actor", {
+          actor: result.id,
+          items: [{ name: "e2e second species", type: "race" }]
+        });
+        same([second.items[0].created, "id" in second.items[0]], [false, false], "a second species");
+        assert(/^foundry_error: Foundry created nothing/.test(second.items[0].error), second.items[0].error);
+      }
+    );
+
+    await check(
+      "on a token's own actor, items and effects are written for that token, and the server keeps every call",
+      async () => {
+        const placed = await tool(client, "place_tokens", {
+          sceneId,
+          tokens: [{ actor: houndId, at: [650, 350], actorLink: false }]
+        });
+        const tokenId = placed.tokens[0].id;
+        const uuid = `Scene.${sceneId}.Token.${tokenId}.Actor.${houndId}`;
+        // What the server returns for the scene, beside what the page shows: they part when a write is lost.
+        const delta = () =>
+          page.evaluate(
+            async (scene, token) => {
+              const [fresh] = await CONFIG.DatabaseBackend.get(getDocumentClass("Scene"), { query: { _id: scene } });
+              const pick = (data) => ({
+                hp: data?.system?.attributes?.hp?.value ?? null,
+                items: (data?.items ?? [])
+                  .map((item) =>
+                    item._tombstone
+                      ? "tombstone"
+                      : `${item.name}: ${Object.values(item.system.activities)
+                          .map((activity) => activity.attack?.bonus ?? activity.type)
+                          .join(",")}`
+                  )
+                  .sort(),
+                effects: (data?.effects ?? []).map((effect) => effect.name)
+              });
+              return {
+                page: pick(game.scenes.get(scene).tokens.get(token).delta._source),
+                server: pick(fresh.tokens.get(token)._source.delta)
+              };
+            },
+            sceneId,
+            tokenId
+          );
+        const worldBite = () =>
+          page.evaluate(
+            (actor, item) =>
+              Object.values(game.actors.get(actor).items.get(item)._source.system.activities)[0].attack.bonus,
+            houndId,
+            ids.Bite
+          );
+        await tool(client, "ensure_actor", { actor: uuid, system: { attributes: { hp: { value: 9 } } } });
+        const own = {
+          actor: uuid,
+          items: [
+            {
+              name: "Net",
+              type: "feat",
+              system: { activities: { throw: { type: "attack", attack: { bonus: "3" } } } }
+            },
+            { name: "Bite", type: "feat", system: { activities: { bite: { attack: { bonus: "9" } } } } }
+          ],
+          effects: [{ _id: "dazed", name: "Dazed" }]
+        };
+        const written = await tool(client, "ensure_actor", own);
+        same(
+          written.items.map((item) => [item.name, item.created, item.unapplied]),
+          [
+            ["Net", true, []],
+            ["Bite", false, []]
+          ],
+          "items"
+        );
+        same(written.items[1].id, ids.Bite, "the world actor's item, changed for the token");
+        const first = { hp: 9, items: ["Bite: 9", "Net: 3"], effects: ["Dazed"] };
+        same(await delta(), { page: first, server: first }, "the token's own data after three calls");
+        same(await worldBite(), "7", "the world actor's bite");
+        const again = await tool(client, "ensure_actor", own);
+        same(quiet(again.items), allQuiet(2), "repeat of the items");
+        same(quiet(again.effects), allQuiet(1), "repeat of the effect");
+        same(await delta(), { page: first, server: first }, "the token's own data after the repeat");
+        const mixed = await tool(client, "ensure_actor", {
+          actor: uuid,
+          system: { attributes: { hp: { value: 8 } } },
+          items: [{ name: "Net", type: "feat", system: { activities: { throw: { attack: { bonus: "4" } } } } }]
+        });
+        same(
+          [mixed.changed, mixed.items[0].changed.length, mixed.items[0].unapplied],
+          [["system.attributes.hp.value"], 1, []],
+          "actor data and an item in one call"
+        );
+        const both = { hp: 8, items: ["Bite: 9", "Net: 4"], effects: ["Dazed"] };
+        same(await delta(), { page: both, server: both }, "the token's own data after actor data and an item together");
+        const removed = await tool(client, "ensure_actor", {
+          actor: uuid,
+          items: [{ name: "Bite", type: "feat", remove: ["system.activities.bite"] }],
+          removeItems: [written.items[0].id, ids["Fire Breath"]],
+          removeEffects: ["dazed"]
+        });
+        same(
+          [removed.items[0].changed.length, removed.items[0].unapplied, removed.removedItems, removed.removedEffects],
+          [1, [], 2, 1],
+          "removed"
+        );
+        const after = { hp: 8, items: ["Bite: ", "tombstone"], effects: [] };
+        same(await delta(), { page: after, server: after }, "the token's own data after the removals");
+        same(await worldBite(), "7", "the world actor's bite after the removals");
+        const read = await tool(client, "get_actor", { actor: uuid });
+        same(
+          read.items.map((item) => item.name).includes("Fire Breath"),
+          false,
+          "the token's actor still lists an item removed for it"
+        );
+        same((await tool(client, "delete_tokens", { sceneId, ids: [tokenId] })).deleted, 1, "token deleted");
+      }
+    );
+
+    await check("delete_actors deletes the actors with their items and effects", async () => {
+      const all = (await tool(client, "list_actors", { folder: [itemFolder] })).actors.map((actor) => actor.id);
+      same(all.length, 2, "actors in the folder");
+      same((await tool(client, "delete_actors", { ids: all })).deleted, 2, "deleted");
+    });
+  } finally {
+    await page
+      .evaluate(
+        async (id, name) => {
+          const top = game.folders.find((f) => f.type === "Actor" && f.name === name && !f.folder);
+          for (const actor of top?.contents ?? []) {
+            const tokens = game.scenes.get(id)?.tokens.filter((t) => t.actorId === actor.id) ?? [];
+            for (const token of tokens) await token.delete();
+          }
+          await top?.delete({ deleteSubfolders: true, deleteContents: true });
+        },
+        sceneId,
+        itemFolder
+      )
+      .catch((e) => console.log(`cleanup: item actor folder delete failed: ${e.message}`));
+  }
+
   await check(
     "with a wrong token in the page the module refuses the server and tool calls fail with no bridge",
     async () => {

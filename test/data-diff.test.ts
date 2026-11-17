@@ -6,6 +6,7 @@ import {
   dropAt,
   entriesToRemove,
   explainRecasts,
+  giveElementIds,
   givesValueOn,
   hasPath,
   pickData,
@@ -495,5 +496,64 @@ describe("updateFor and writeOutcome", () => {
       changed: ["name", "system.hp.max"],
       unapplied: ["system.hp.temp"]
     });
+  });
+});
+
+describe("giveElementIds", () => {
+  const ids = () => {
+    let next = 0;
+    return () => `new${++next}`;
+  };
+
+  it("gives an element without an id the id of the stored element in its place, and a new one where there is none", () => {
+    const given = { system: { changes: [{ key: "a" }, { key: "b" }, { key: "c" }] } };
+    const stored = {
+      system: {
+        changes: [
+          { _id: "one", key: "x" },
+          { _id: "two", key: "y" }
+        ]
+      }
+    };
+    giveElementIds(given, ["system.changes"], stored, ids());
+    assert.deepEqual(given.system.changes, [
+      { key: "a", _id: "one" },
+      { key: "b", _id: "two" },
+      { key: "c", _id: "new1" }
+    ]);
+  });
+
+  it("keeps an id an element names, and gives no stored id that another element of the list names", () => {
+    const given = { list: [{ _id: "two", key: "moved up" }, { key: "new" }, { _id: null, key: "none" }] };
+    const stored = { list: [{ _id: "one" }, { _id: "two" }, { _id: "three" }] };
+    giveElementIds(given, ["list"], stored, ids());
+    assert.deepEqual(given.list, [
+      { _id: "two", key: "moved up" },
+      { key: "new", _id: "new1" },
+      { _id: null, key: "none" }
+    ]);
+  });
+
+  it("gives every element a new id where nothing is stored, also in a list inside an element of a list", () => {
+    const given = { profiles: [{ groups: [{}, {}] }], other: [{}] };
+    giveElementIds(given, ["profiles", "profiles.0.groups"], {}, ids());
+    assert.deepEqual(given, {
+      profiles: [{ groups: [{ _id: "new2" }, { _id: "new3" }], _id: "new1" }],
+      other: [{}]
+    });
+  });
+
+  it("leaves alone what is no list of objects, and a path the data does not have", () => {
+    const given = { changes: "all", tags: ["a", 1, null], system: null };
+    const before = structuredClone(given);
+    giveElementIds(given, ["changes", "tags", "system.changes", "missing.list"], { tags: [{ _id: "one" }] }, ids());
+    assert.deepEqual(given, before);
+  });
+
+  it("takes the stored id of a list inside a stored list by its place too", () => {
+    const given = { profiles: [{ _id: "p1", groups: [{}] }] };
+    const stored = { profiles: [{ _id: "p1", groups: [{ _id: "g1" }] }] };
+    giveElementIds(given, ["profiles.0.groups"], stored, ids());
+    assert.deepEqual(given.profiles[0]!.groups, [{ _id: "g1" }]);
   });
 });

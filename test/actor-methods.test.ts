@@ -178,6 +178,7 @@ describe("get_actor", () => {
       ],
       itemData: [],
       effects: [{ id: poisoned.id, name: "Poisoned", disabled: true }],
+      effectData: [],
       tokens: [
         { sceneId: scene.id, sceneName: "Cellar", tokenId: linked.id, name: "Goblin Boss" },
         { sceneId: other.id, sceneName: "Road", tokenId: unlinked.id, name: "Goblin" }
@@ -283,9 +284,9 @@ describe("get_schema", () => {
   it("lists the types of each typed document, keeping base only where the system models it", async () => {
     const types = async (document: string) => (await viaTool("get_schema", { document })).types;
     assert.deepEqual(await types("Actor"), ["character", "npc", "vehicle", "group"]);
-    assert.deepEqual(await types("Item"), ["weapon", "feat", "spell"]);
+    assert.deepEqual(await types("Item"), ["weapon", "feat", "spell", "class"]);
     assert.deepEqual(await types("ActiveEffect"), ["base", "enchantment"]);
-    assert.deepEqual(await types("Activity"), ["attack", "heal"]);
+    assert.deepEqual(await types("Activity"), ["attack", "save", "cast", "heal"]);
     assert.deepEqual(await types("Advancement"), ["HitPoints"]);
   });
 
@@ -331,8 +332,10 @@ describe("get_schema", () => {
   it("returns the tree of an item type, an activity type and the token", async () => {
     const weapon = await viaTool("get_schema", { document: "Item", type: "weapon" });
     assert.deepEqual(weapon.fields.system, { damage: { base: "formula" }, activities: "collection of Activity" });
-    const attack = await viaTool("get_schema", { document: "Activity", type: "attack" });
-    assert.deepEqual(attack.fields, { type: 'string, default "attack"', attack: { bonus: "formula" } });
+    const heal = await viaTool("get_schema", { document: "Activity", type: "heal" });
+    assert.deepEqual(heal.fields, { healing: {} });
+    const attack = await viaTool("get_schema", { document: "Activity", type: "attack", path: "attack" });
+    assert.deepEqual(attack.fields, { bonus: 'formula, default ""', flat: "boolean, default false" });
     const token = await viaTool("get_schema", { document: "Token" });
     const radius = "number, min 0, step 0.01, default 0";
     assert.deepEqual(token.fields, {

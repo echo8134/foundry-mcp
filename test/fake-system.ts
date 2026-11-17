@@ -73,7 +73,11 @@ export class FormulaField extends StringField {}
 export class IdentifierField extends StringField {}
 export class MappingField extends TypedObjectField {}
 /** dnd5e's TypeDataField5e: the data model of an entry comes from the `getModel` function it was built with. */
-export class TypeDataField5e extends ObjectField {}
+export class TypeDataField5e extends ObjectField {
+  getModelForType(type?: string) {
+    return this.getModel?.(type) ?? null;
+  }
+}
 export class AdvancementDataField extends TypeDataField5e {
   constructor(typeModel?: { schema: SchemaField }) {
     super();
@@ -83,11 +87,58 @@ export class AdvancementDataField extends TypeDataField5e {
     return this.typeModel;
   }
 }
+const dnd5e = () => (globalThis as Record<string, any>).CONFIG?.DND5E;
 export class ActivitiesField extends MappingField {
   constructor() {
-    super(new TypeDataField5e());
+    super(new TypeDataField5e({ getModel: (type: string) => dnd5e()?.activityTypes[type]?.documentClass }));
   }
 }
+export class AdvancementCollectionField extends MappingField {
+  constructor() {
+    super(new TypeDataField5e({ getModel: (type: string) => dnd5e()?.advancementTypes[type]?.documentClass }));
+  }
+}
+/** A behavior an activity applies. Its config takes the data model of the behavior's own type. */
+export class AppliedBehaviorField extends SchemaField {}
+
+let elementIds = 0;
+/** Stands in for foundry.utils.randomID as the initial value of an `_id` a list element is given. */
+const newElementId = () => `element${String(++elementIds).padStart(9, "0")}`;
+const generatedId = () => new DocumentIdField({ nullable: true, initial: newElementId });
+
+/**
+ * The fields every dnd5e activity has, as far as the tests use them (dnd5e module/data/activity/base-activity.mjs:50-99):
+ * its own id and type, a description, references to effects of its item, and behaviors with an id of their own.
+ */
+const activity = (type: string, own: Record<string, DataField> = {}) => ({
+  documentClass: {
+    schema: new SchemaField({
+      _id: generatedId(),
+      type: new StringField({ initial: type }),
+      name: new StringField({ initial: "" }),
+      description: new SchemaField({ value: new HTMLField({ initial: "" }) }),
+      effects: new ArrayField(new SchemaField({ _id: new DocumentIdField({ nullable: true, initial: null }) })),
+      behaviors: new ArrayField(
+        new AppliedBehaviorField({
+          _id: generatedId(),
+          type: new StringField(),
+          config: new TypeDataField5e({ getModel: (kind: string) => dnd5e()?.activityBehaviorTypes[kind]?.model })
+        })
+      ),
+      ...own
+    })
+  }
+});
+
+const damageParts = () =>
+  new ArrayField(
+    new SchemaField({
+      number: new NumberField({ integer: true, min: 0, nullable: true, initial: null }),
+      denomination: new NumberField({ integer: true, min: 0, nullable: true, initial: null }),
+      bonus: new FormulaField({ initial: "" }),
+      types: new SetField(new StringField())
+    })
+  );
 
 /**
  * The token fields a test uses, with the initial values of Foundry's own (common/documents/token.mjs:53-189). A level id
@@ -206,11 +257,50 @@ export function systemConfig() {
     flags: new DocumentFlagsField(),
     _stats: new ObjectField()
   });
+  // The fields of Foundry's own item and effect documents (common/documents/item.mjs, active-effect.mjs:46-87).
   const itemSchema = new SchemaField({
-    name: new StringField({ initial: "" }),
+    _id: new DocumentIdField({ nullable: true, initial: null }),
+    name: new StringField({ required: true, blank: false }),
+    type: new StringField(),
+    img: new FilePathField({ nullable: true, initial: "icons/svg/item-bag.svg" }),
     system: new TypeDataField(Item),
-    effects: new EmbeddedCollectionField(ActiveEffect)
+    effects: new EmbeddedCollectionField(ActiveEffect),
+    folder: new ForeignDocumentField(document("Folder"), { nullable: true, initial: null }),
+    sort: new NumberField({ integer: true, initial: 0 }),
+    ownership: new DocumentOwnershipField({ initial: () => ({ default: 0 }) }),
+    flags: new DocumentFlagsField(),
+    _stats: new ObjectField()
   });
+  const effectSchema = new SchemaField({
+    _id: new DocumentIdField({ nullable: true, initial: null }),
+    name: new StringField({ required: true, blank: false }),
+    img: new FilePathField({ nullable: true, initial: "icons/svg/aura.svg" }),
+    type: new StringField({ initial: "base" }),
+    system: new TypeDataField(ActiveEffect),
+    disabled: new BooleanField({ initial: false }),
+    duration: new SchemaField({
+      value: new NumberField({ integer: true, min: 0, nullable: true, initial: null }),
+      units: new StringField({ initial: "seconds" })
+    }),
+    description: new HTMLField({ initial: "" }),
+    tint: new ColorField({ initial: "#ffffff" }),
+    transfer: new BooleanField({ initial: true }),
+    statuses: new SetField(new StringField()),
+    flags: new DocumentFlagsField(),
+    _stats: new ObjectField()
+  });
+  // dnd5e gives each change of an effect an id of its own (dnd5e module/data/abstract/active-effect-data-model.mjs:34-36).
+  const effectChanges = () =>
+    new ArrayField(
+      new SchemaField({
+        _id: generatedId(),
+        key: new StringField({ initial: "" }),
+        type: new StringField({ initial: "add" }),
+        value: new StringField({ initial: "" }),
+        phase: new StringField({ initial: "initial" })
+      })
+    );
+  const description = () => new SchemaField({ value: new HTMLField({ initial: "" }) });
   return {
     Actor: {
       documentClass: { schema: actorSchema, metadata: { baseTypeAllowed: false } },
@@ -253,18 +343,35 @@ export function systemConfig() {
             activities: new ActivitiesField()
           })
         },
-        feat: { schema: new SchemaField({ description: new SchemaField({ value: new HTMLField({ initial: "" }) }) }) },
-        spell: { schema: new SchemaField({ level: new NumberField({ integer: true, min: 0, max: 9, initial: 1 }) }) }
+        feat: {
+          schema: new SchemaField({
+            description: description(),
+            type: new SchemaField({ value: new StringField({ initial: "" }) }),
+            activities: new ActivitiesField()
+          })
+        },
+        spell: {
+          schema: new SchemaField({
+            description: description(),
+            level: new NumberField({ integer: true, min: 0, max: 9, initial: 1 }),
+            activities: new ActivitiesField()
+          })
+        },
+        class: {
+          schema: new SchemaField({
+            levels: new NumberField({ integer: true, min: 0, initial: 1 }),
+            advancement: new AdvancementCollectionField()
+          })
+        }
       }
     },
     ActiveEffect: {
-      documentClass: {
-        schema: new SchemaField({ name: new StringField(), system: new TypeDataField(ActiveEffect) }),
-        metadata: { baseTypeAllowed: true }
-      },
+      documentClass: { schema: effectSchema, metadata: { baseTypeAllowed: true } },
       dataModels: {
-        base: { schema: new SchemaField({}) },
-        enchantment: { schema: new SchemaField({ magical: new BooleanField({ initial: true }) }) }
+        base: { schema: new SchemaField({ changes: effectChanges() }) },
+        enchantment: {
+          schema: new SchemaField({ changes: effectChanges(), magical: new BooleanField({ initial: true }) })
+        }
       }
     },
     Token: {
@@ -276,15 +383,29 @@ export function systemConfig() {
     },
     DND5E: {
       activityTypes: {
-        attack: {
-          documentClass: {
-            schema: new SchemaField({
-              type: new StringField({ initial: "attack" }),
-              attack: new SchemaField({ bonus: new FormulaField() })
-            })
-          }
-        },
+        attack: activity("attack", {
+          attack: new SchemaField({
+            bonus: new FormulaField({ initial: "" }),
+            flat: new BooleanField({ initial: false })
+          }),
+          damage: new SchemaField({ includeBase: new BooleanField({ initial: true }), parts: damageParts() })
+        }),
+        save: activity("save", {
+          save: new SchemaField({
+            ability: new SetField(new StringField()),
+            dc: new SchemaField({ formula: new FormulaField({ initial: "" }) })
+          }),
+          damage: new SchemaField({ onSave: new StringField({ initial: "half" }), parts: damageParts() })
+        }),
+        cast: activity("cast", {
+          spell: new SchemaField({ uuid: new DocumentUUIDField({ nullable: true, initial: null }) })
+        }),
         heal: { documentClass: { schema: new SchemaField({ healing: new SchemaField({}) }) } }
+      },
+      activityBehaviorTypes: {
+        difficultTerrain: {
+          model: { schema: new SchemaField({ multiplier: new NumberField({ min: 0, initial: 2 }) }) }
+        }
       },
       advancementTypes: {
         HitPoints: {

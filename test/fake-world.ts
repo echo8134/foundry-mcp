@@ -1,35 +1,8 @@
 import assert from "node:assert/strict";
+import { Collection, type EmbeddedWrite, fakeActors } from "./fake-actors.ts";
 import { fakeDocument } from "./fake-dom.ts";
-import {
-  applyChanges,
-  cleanValue,
-  cloneChanges,
-  ForcedDeletion,
-  ownershipErrors,
-  sanitizeHtml,
-  validationErrors
-} from "./fake-model.ts";
-import { ObjectField, SchemaField, systemConfig } from "./fake-system.ts";
-
-export class Collection<T> extends Map<string, T> {
-  filter(fn: (value: T) => boolean) {
-    return [...this.values()].filter(fn);
-  }
-  map<R>(fn: (value: T) => R) {
-    return [...this.values()].map(fn);
-  }
-}
-
-const isObject = (value: unknown): value is Record<string, any> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-function merge(target: Record<string, any>, changes: Record<string, any>) {
-  for (const [key, value] of Object.entries(changes)) {
-    if (isObject(value) && isObject(target[key])) merge(target[key], value);
-    else target[key] = isObject(value) ? merge({}, value) : value;
-  }
-  return target;
-}
+import { applyChanges, cleanValue, cloneChanges, ForcedDeletion, merge, validationErrors } from "./fake-model.ts";
+import { systemConfig } from "./fake-system.ts";
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -88,7 +61,7 @@ const USER_ID = "user1";
 
 const DOCUMENT_TYPES = Object.freeze({
   Actor: ["base", "character", "npc", "vehicle", "group"],
-  Item: ["base", "weapon", "feat", "spell"],
+  Item: ["base", "weapon", "feat", "spell", "class"],
   ActiveEffect: ["base", "enchantment"]
 });
 
@@ -103,8 +76,6 @@ type WorldOptions = {
 export function fakeWorld(options: WorldOptions = {}) {
   const folders = new Collection<any>();
   const scenes = new Collection<any>();
-  const actors = new Collection<any>();
-  const packs = new Map<string, Collection<any>>();
   const log = {
     sceneCreates: 0,
     sceneUpdates: 0,
@@ -123,7 +94,9 @@ export function fakeWorld(options: WorldOptions = {}) {
     tokenDeletes: 0,
     actorCreates: [] as Record<string, any>[],
     actorUpdates: [] as { id: string; changes: Record<string, any> }[],
-    actorDeletes: [] as string[][]
+    actorDeletes: [] as string[][],
+    /** Every create, update and deletion of items and effects, on an actor or on an item. */
+    embedded: [] as EmbeddedWrite[]
   };
   const control = {
     thumbnailFails: options.thumbnailFails ?? false,
@@ -154,7 +127,15 @@ export function fakeWorld(options: WorldOptions = {}) {
     /** The message of an error the update throws once it has stored its changes, as a failing hook after the write does. */
     actorUpdateError: null as string | null,
     /** Stands in for a preDeleteActor hook that refuses the deletion of an actor. */
-    vetoActorDelete: null as null | ((actor: any) => boolean)
+    vetoActorDelete: null as null | ((actor: any) => boolean),
+    /** Stands in for a preCreate hook that refuses an item or an effect. */
+    vetoEmbedded: null as null | ((document: string, data: Record<string, any>) => boolean),
+    /** Stands in for a hook or a system rule that changes the data of an item or effect before it is stored. */
+    filterEmbeddedData: null as null | ((document: string, source: Record<string, any>) => void),
+    /** Stands in for a preUpdate hook that changes or drops part of an update of an item or effect. */
+    filterEmbeddedChanges: null as null | ((document: string, changes: Record<string, any>) => void),
+    /** The message of an error a write of items or effects throws once it has stored what it was given. */
+    embeddedError: null as null | ((action: string, document: string) => string | undefined)
   };
   const delay = () => pause(options.latency ?? 0);
   const system = systemConfig();
@@ -242,281 +223,33 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
   }
 
-  const actorSchema = system.Actor.documentClass.schema;
-  const actorModels = system.Actor.dataModels as Record<
-    string,
-    { schema: SchemaField; migrate?: (system: Record<string, any>) => void }
-  >;
-  /** The fields of an actor of a type: the document's own, with `system` as the data model of the type has it. */
-  const actorFields = (type: string) =>
-    new SchemaField({ ...actorSchema.fields, system: actorModels[type]?.schema ?? new ObjectField() });
-
-  /** What the actor model makes of given data: the system's migration of old shapes first, then the cleaning of each field. */
-  function cleanActor(data: Record<string, any>, type: string, options: { partial: boolean; source?: unknown }) {
-    if (isObject(data.system)) actorModels[type]?.migrate?.(data.system);
-    return cleanValue(actorFields(type), data, options) as Record<string, any>;
-  }
-
-  /** What Foundry's validation has against cleaned changes to an actor: against the changes themselves, and against the data they lead to. */
-  function actorChangeErrors(type: string, source: Record<string, any>, cleaned: Record<string, any>) {
-    const next = applyChanges(structuredClone(source), cleaned);
-    const given = isObject(cleaned.ownership) ? ownershipErrors(cleaned.ownership) : [];
-    return [...given, ...validationErrors(actorFields(type), next)];
-  }
-
-  /**
-   * The two ways an actor's data is changed, for a world actor and for a token's own actor alike. validate with changes
-   * is a dry run of the update (common/abstract/data.mjs:575): it cleans the changes, the given object itself when
-   * clean.copy is false, and throws what the update would refuse, or answers false when it is not strict. An update
-   * cleans, passes the stand-in hook, and is skipped without an error when the result fails validation
-   * (client/data/client-backend.mjs:246-259). The server then stores HTML in its own spelling.
-   */
-  function writable(actor: any, store: (cleaned: Record<string, any>) => void) {
-    actor.validate = ({
-      changes,
-      clean,
-      strict = true
-    }: {
-      changes: Record<string, any>;
-      clean?: { copy?: boolean };
-      strict?: boolean;
-    }) => {
-      const cleaned = cleanActor(clean?.copy === false ? changes : cloneChanges(changes), actor.type, {
-        partial: true,
-        source: actor._source
-      });
-      const errors = actorChangeErrors(actor.type, actor._source, cleaned);
-      if (errors.length > 0 && strict) throw new Error(`Actor validation errors: ${errors.join("; ")}`);
-      return errors.length === 0;
-    };
-    actor.update = async (changes: Record<string, any>) => {
-      await delay();
-      log.actorUpdates.push({ id: actor.id, changes: cloneChanges(changes) });
-      const cleaned = cleanActor(cloneChanges(changes), actor.type, { partial: true, source: actor._source });
-      control.filterActorChanges?.(cleaned);
-      const errors = actorChangeErrors(actor.type, actor._source, cleaned);
-      if (errors.length > 0) {
-        log.notifications.push(`Actor update skipped: ${errors.join("; ")}`);
-        return undefined;
-      }
-      sanitizeHtml(actorFields(actor.type), cleaned);
-      store(cleaned);
-      if (control.actorUpdateError) throw new Error(control.actorUpdateError);
-      return actor;
-    };
-  }
-
-  /** The tokens built for each actor, stored or not: a token registers with its base actor (client/documents/token.mjs:434). */
-  const dependentTokens = new Map<string, Set<any>>();
-  /** The part of Actor#getDependentTokens (client/documents/actor.mjs:597-625) that concreteOnly decides. */
-  const inItsScene = (token: any) => token.parent.tokens.get(token.id) === token;
-
-  /**
-   * An actor around its stored data. `prepared` stands in for what dnd5e derives from the stored `system`, and without
-   * it the prepared data is the stored one. `tokenImages` are the files a wildcard token image of the prototype token
-   * matches.
-   */
-  function actorDocument(
-    source: Record<string, any>,
-    {
-      id,
-      prepared,
-      items = [],
-      effects = [],
-      tokenImages = []
-    }: { id: string | null; prepared?: any; items?: any[]; effects?: any[]; tokenImages?: string[] }
-  ) {
-    let lastWildcard: string | undefined;
-    const makeItem = (item: Record<string, any>) => {
-      const itemSource: Record<string, any> = {
-        _id: `item${++counter}`,
-        system: {},
-        effects: [],
-        flags: {},
-        ...structuredClone(item)
-      };
-      return {
-        id: itemSource._id,
-        uuid: `Actor.${id}.Item.${itemSource._id}`,
-        documentName: "Item",
-        name: itemSource.name,
-        type: itemSource.type,
-        flags: itemSource.flags,
-        _source: itemSource
-      };
-    };
-    const actor: any = {
-      id,
-      uuid: `Actor.${id}`,
-      documentName: "Actor",
-      _source: source,
-      items: new Collection<any>(items.map(makeItem).map((item: any) => [item.id, item])),
-      effects: new Collection<any>(
-        effects.map((effect: Record<string, any>) => {
-          const { _id, ...rest } = effect;
-          const one = { id: _id ?? `effect${++counter}`, disabled: false, ...rest };
-          return [one.id, one];
-        })
-      ),
-      pack: null,
-      isToken: false,
-      token: null,
-      prototypeToken: { toObject: () => structuredClone(source.prototypeToken) },
-      get system() {
-        return prepared ?? source.system;
-      },
-      get name() {
-        return source.name;
-      },
-      get type() {
-        return source.type;
-      },
-      get img() {
-        return source.img;
-      },
-      get flags() {
-        return source.flags;
-      },
-      get folder() {
-        return source.folder ? folders.get(source.folder) : null;
-      },
-      /** The stored data with the embedded documents in it, as Document#toObject gives it. */
-      toObject: () => ({
-        ...structuredClone(source),
-        _id: id,
-        items: actor.items.map((item: any) => structuredClone(item._source)),
-        effects: actor.effects.map(({ id: effectId, ...effect }: any) => ({
-          _id: effectId,
-          ...structuredClone(effect)
-        }))
-      }),
-      getDependentTokens({ concreteOnly = false }: { concreteOnly?: boolean } = {}) {
-        return [...(dependentTokens.get(id ?? "") ?? [])].filter((token) => !concreteOnly || inItsScene(token));
-      },
-      /**
-       * Actor#getTokenDocument (client/documents/actor.mjs:337): an unsaved token from the prototype token with the data
-       * merged over it, on the given parent scene or else the viewed one. An unlinked copy with appendNumber is named with
-       * the lowest number no token of this actor on that scene has. With randomImg and no image given, each call takes
-       * one of the wildcard images, and never the one the call before took when there are several. Invalid data throws,
-       * as the token constructor does.
-       */
-      async getTokenDocument(data: Record<string, any> = {}, tokenOptions: { parent?: any } = {}) {
-        const parent = tokenOptions.parent ?? globals.canvas.scene;
-        const { appendNumber, ...prototype } = structuredClone(source.prototypeToken);
-        const tokenData: Record<string, any> = { ...prototype, actorId: id };
-        if (tokenData.randomImg && !data.texture?.src) {
-          const fresh = tokenImages.filter((image: string) => image !== lastWildcard);
-          lastWildcard = (tokenImages.length > 1 ? fresh : tokenImages)[0];
-          tokenData.texture = { ...tokenData.texture, src: lastWildcard };
-        }
-        if (!tokenData.actorLink && appendNumber) {
-          const taken = new Set(parent.tokens.filter((token: any) => token.actorId === id).map((t: any) => t.name));
-          let number = 1;
-          while (taken.has(`${tokenData.name} (${number})`)) number++;
-          tokenData.name = `${tokenData.name} (${number})`;
-        }
-        return makeToken(merge(tokenData, structuredClone(data)), parent, null);
-      }
-    };
-    source.items = actor.items.map((item: any) => item._source);
-    writable(actor, (cleaned) => applyChanges(source, cleaned));
-    return actor;
-  }
-
-  /** An actor of a test's setup: its data is stored as the test gives it, over a few defaults, without cleaning. */
-  function makeActor(data: Record<string, any>) {
-    const { id = `actor${++counter}`, prepared, items, effects, tokenImages, ...rest } = data;
-    const source: Record<string, any> = {
-      name: "",
-      type: "npc",
-      img: "icons/svg/mystery-man.svg",
-      folder: null,
-      system: {},
-      prototypeToken: { name: rest.name ?? "", actorLink: false },
-      ownership: { default: 0 },
-      flags: {},
-      ...structuredClone(rest)
-    };
-    return actorDocument(source, { id, prepared, items, effects, tokenImages });
-  }
-
-  /**
-   * An actor as Foundry's own class builds it from given data: the object it is given becomes its stored data and is
-   * cleaned in place, and data the model refuses throws (measured on 14.370).
-   */
-  function builtActor(data: Record<string, any>, id: string | null) {
-    const { items, effects } = data;
-    delete data.items;
-    delete data.effects;
-    if (!actorModels[data.type]) throw new Error(`Actor validation errors: type: "${data.type}" is not a valid type`);
-    cleanActor(data, data.type, { partial: false });
-    data._id = id;
-    const errors = validationErrors(actorFields(data.type), data);
-    if (errors.length > 0) throw new Error(`Actor validation errors: ${errors.join("; ")}`);
-    return actorDocument(data, { id, items, effects });
-  }
-
-  /** The changes of an update without its deletions, and without the objects that held nothing else. */
-  function withoutDeletions(changes: Record<string, any>) {
-    const kept: Record<string, any> = {};
-    for (const [key, value] of Object.entries(changes)) {
-      if (value instanceof ForcedDeletion) continue;
-      if (!isObject(value)) kept[key] = value;
-      else {
-        const inner = withoutDeletions(value);
-        if (Object.keys(inner).length > 0 || Object.keys(value).length === 0) kept[key] = inner;
-      }
-    }
-    return kept;
-  }
-
-  /**
-   * An unlinked token's actor: the base actor with the token's delta merged over it (common/documents/actor-delta.mjs:92).
-   * An update of it goes into the delta (client/data/client-backend.mjs:762-767) and leaves the world actor as it was.
-   * Measured on 14.370, as the server returns the scene and as the page shows it once loaded again: such an update
-   * leaves that update alone as the token's delta, which drops what the token changed before, and removes nothing.
-   * An update of the token with a delta merges into it and applies its deletions.
-   */
-  function syntheticActor(base: any, token: any) {
-    const delta = () => token._source.delta;
-    const merged = () => merge(structuredClone(base._source), structuredClone(delta()));
-    const actor: any = {
-      id: base.id,
-      uuid: `${token.parent.uuid}.Token.${token.id}.Actor.${base.id}`,
-      documentName: "Actor",
-      get _source() {
-        return merged();
-      },
-      items: base.items,
-      effects: base.effects,
-      pack: null,
-      isToken: true,
-      token,
-      folder: null,
-      prototypeToken: base.prototypeToken,
-      get system() {
-        return merge(structuredClone(base.system), structuredClone(delta().system ?? {}));
-      },
-      get name() {
-        return actor._source.name;
-      },
-      get type() {
-        return actor._source.type;
-      },
-      get img() {
-        return actor._source.img;
-      },
-      get flags() {
-        return actor._source.flags;
-      },
-      getDependentTokens: ({ concreteOnly = false }: { concreteOnly?: boolean } = {}) =>
-        !concreteOnly || inItsScene(token) ? [token] : []
-    };
-    writable(actor, (cleaned) => {
-      token._source.delta = withoutDeletions(cleaned);
-    });
-    return actor;
-  }
+  const globals = globalThis as Record<string, any>;
+  let makeTokenLater: (data: Record<string, any>, scene: any, id: string | null) => any;
+  const {
+    actors,
+    items,
+    dependentTokens,
+    syntheticActor,
+    resolve,
+    within,
+    FakeActor,
+    FakeItem,
+    FakeEffect,
+    addActor,
+    addPackActor,
+    addItem,
+    addPackItem
+  } = fakeActors({
+    system,
+    folders,
+    log,
+    control,
+    delay,
+    nextNumber: () => ++counter,
+    makeToken: (data, scene, id) => makeTokenLater(data, scene, id),
+    viewedScene: () => globals.canvas.scene,
+    userId: USER_ID
+  });
 
   /** What Foundry stores of the data a token is built from, or the error its token model throws on it. */
   function tokenSource(data: Record<string, any>, scene: any) {
@@ -617,6 +350,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     }
     return token;
   }
+
+  makeTokenLater = makeToken;
 
   /**
    * One token of an update: the changes are cleaned, pass the stand-in hook, and are merged into the stored data. Foundry
@@ -948,30 +683,20 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   /**
-   * The UUID forms get_actor takes, resolved as foundry.utils.fromUuid does for them (client/utils/helpers.mjs:172): null
+   * The UUID forms the tools take, resolved as foundry.utils.fromUuid does for them (client/utils/helpers.mjs:172): null
    * when nothing is there. A UUID of the form "Broken.<reason>" throws, as Foundry's parsing can on input it does not expect.
    */
   async function fromUuid(uuid: string) {
     const parts = uuid.split(".");
     if (parts[0] === "Broken") throw new TypeError(parts[1]);
-    if (parts[0] === "Compendium") {
-      const [, scope, name, type, id] = parts;
-      return type === "Actor" ? (packs.get(`${scope}.${name}`)?.get(id!) ?? null) : null;
-    }
-    if (parts[0] === "Actor") {
-      const actor = actors.get(parts[1]!);
-      if (parts[2] === "Item") return actor?.items.get(parts[3]) ?? null;
-      return actor ?? null;
-    }
     if (parts[0] === "Scene") {
       const token = scenes.get(parts[1]!)?.tokens.get(parts[3]);
-      if (parts[4] === "Actor") return token?.actor?.id === parts[5] ? token.actor : null;
-      return token ? { ...token, documentName: "Token" } : null;
+      if (parts[4] !== "Actor") return token ? { ...token, documentName: "Token" } : null;
+      return token?.actor?.id === parts[5] ? within(token.actor, parts.slice(6)) : null;
     }
-    return null;
+    return resolve(parts) ?? null;
   }
 
-  const globals = globalThis as Record<string, any>;
   /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
   class FakeToken {
     static schema = tokenFields;
@@ -982,67 +707,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     }
   }
 
-  /**
-   * Foundry's Actor class as the write tools use it. A create resolves to nothing, without an error, for an actor that
-   * fails validation or that a preCreate hook refuses (client/data/client-backend.mjs:91-108), and so does the
-   * deletion of an actor a preDelete hook refuses.
-   */
-  class FakeActor {
-    static schema = actorSchema;
-    static metadata = system.Actor.documentClass.metadata;
-    constructor(data: Record<string, any>) {
-      // biome-ignore lint/correctness/noConstructorReturn: the fake actor is a plain object that builtActor builds.
-      return builtActor(data, null);
-    }
-    static async create(data: Record<string, any>) {
-      await delay();
-      log.actorCreates.push(structuredClone(data));
-      if (control.actorCreateError) throw new Error(control.actorCreateError);
-      let actor: any;
-      try {
-        actor = builtActor(structuredClone(data), `actor${++counter}`);
-      } catch (error) {
-        log.notifications.push(`Actor skipped: ${(error as Error).message}`);
-        return undefined;
-      }
-      if (control.vetoActor?.(data)) {
-        log.notifications.push("Actor creation prevented");
-        return undefined;
-      }
-      control.filterActorData?.(actor._source);
-      sanitizeHtml(actorFields(actor.type), actor._source);
-      actors.set(actor.id, actor);
-      return actor;
-    }
-    static async deleteDocuments(ids: string[]) {
-      await delay();
-      // client/data/client-backend.mjs:403 looks every id up with strict: true before anything is deleted.
-      for (const id of ids) if (!actors.has(id)) throw new Error(`Actor ${id} does not exist`);
-      log.actorDeletes.push([...ids]);
-      const deleted = ids.map((id) => actors.get(id)).filter((actor) => !control.vetoActorDelete?.(actor));
-      for (const actor of deleted) actors.delete(actor.id);
-      return deleted;
-    }
-  }
-
-  /**
-   * WorldCollection#fromCompendium with clearFolder (client/documents/abstract/world-collection.mjs:109-134), as measured
-   * on 14.370: the stored data with its embedded documents and their ids, without the id, the folder and the sort, with
-   * the ownership reset to the current user, and with the source recorded when the document is in a compendium.
-   */
-  function fromCompendium(document: any, { clearFolder = false }: { clearFolder?: boolean } = {}) {
-    const data = document.toObject();
-    if (document.pack) data._stats = { ...data._stats, compendiumSource: document.uuid };
-    delete data._id;
-    delete data.sort;
-    if (clearFolder) delete data.folder;
-    data.ownership = { default: 0, [USER_ID]: 3 };
-    return data;
-  }
-  Object.assign(actors, { fromCompendium });
-
   const install = () => {
-    globals.game = { scenes, folders, actors, documentTypes: DOCUMENT_TYPES, user: { id: USER_ID } };
+    globals.game = { scenes, folders, actors, items, documentTypes: DOCUMENT_TYPES, user: { id: USER_ID } };
     globals.canvas = { scene: null };
     globals.CONST = { FOLDER_MAX_DEPTH: 4 };
     globals._del = new ForcedDeletion();
@@ -1051,6 +717,8 @@ export function fakeWorld(options: WorldOptions = {}) {
       Scene: { documentClass: FakeScene },
       ...system,
       Actor: { ...system.Actor, documentClass: FakeActor },
+      Item: { ...system.Item, documentClass: FakeItem },
+      ActiveEffect: { ...system.ActiveEffect, documentClass: FakeEffect },
       Token: { documentClass: FakeToken },
       weatherEffects: Object.fromEntries((options.weather ?? ["rain", "fog"]).map((key) => [key, {}])),
       Canvas: {
@@ -1059,7 +727,14 @@ export function fakeWorld(options: WorldOptions = {}) {
       }
     };
     globals.foundry = {
-      utils: { fromUuid, mergeObject: merge },
+      utils: {
+        fromUuid,
+        mergeObject: merge,
+        // Stands in for randomID (common/utils/helpers.mjs:1259): a valid document id, another one on each call.
+        randomID: () => `random${String(++counter).padStart(10, "0")}`,
+        // Stands in for deepClone (common/utils/helpers.mjs:253), which copies what structuredClone refuses.
+        deepClone: (value: unknown) => JSON.parse(JSON.stringify(value))
+      },
       canvas: {
         // An empty source loads nothing and resolves null, like a failed load (client/canvas/loader.mjs:758-776).
         loadTexture: async (src: string) => {
@@ -1099,19 +774,6 @@ export function fakeWorld(options: WorldOptions = {}) {
     scene.walls.set(wall.id, wall);
     return wall;
   };
-  const addActor = (data: Record<string, any> = {}) => {
-    const actor = makeActor(data);
-    actors.set(actor.id, actor);
-    return actor;
-  };
-  /** An actor in a compendium pack: not a world actor, with no folder path and no placed tokens. */
-  const addPackActor = (pack: string, data: Record<string, any> = {}) => {
-    const actor = makeActor(data);
-    Object.assign(actor, { pack, uuid: `Compendium.${pack}.Actor.${actor.id}` });
-    if (!packs.has(pack)) packs.set(pack, new Collection<any>());
-    packs.get(pack)!.set(actor.id, actor);
-    return actor;
-  };
   const addToken = (scene: any, data: Record<string, any> = {}) => {
     const token = makeToken(data, scene, `token${++counter}`);
     scene.tokens.set(token.id, token);
@@ -1130,6 +792,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     addLight,
     addActor,
     addPackActor,
+    addItem,
+    addPackItem,
     addToken,
     scenes,
     folders,

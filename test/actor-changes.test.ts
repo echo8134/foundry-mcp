@@ -236,8 +236,13 @@ describe("ensure_actor changing an actor", () => {
     ],
     [
       "data the model refuses",
+      { system: { skills: { ste: { value: "high" } } } },
+      /refuses the data: .*system\.skills\.ste\.value: must be a number/
+    ],
+    [
+      "a number outside its field's range, which Foundry would bring into it",
       { system: { skills: { ste: { value: 5 } } } },
-      /refuses the data: .*system\.skills\.ste\.value: must be at most 2/
+      /system\.skills\.ste\.value: 5 would be stored as 2/
     ],
     [
       "a value Foundry would store as something else",

@@ -17,13 +17,16 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   | {path: string, problem: "embedded"}} FieldProblem
  */
 /**
- * @typedef {(entry: unknown, field: any) => object | null | undefined} SchemaFor the schema to check a given entry
- *   against, or nothing when the entry names no type it knows. It gets the field too, because the class name alone
- *   does not tell the fields apart: dnd5e's activities and advancements are both maps of TypeDataField5e.
+ * @typedef {(entry: unknown, field: any, heldType?: string) => object | null | undefined} SchemaFor the schema to check
+ *   a given entry against, or nothing when the entry names no type it knows. It gets the field too, because the class
+ *   name alone does not tell the fields apart: dnd5e's activities and advancements are both maps of TypeDataField5e.
+ *   `heldType` is the type of the behavior the entry is the config of, which has no type of its own.
  */
 /**
- * @typedef {{type?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[], html: Set<string>}} Walk
- *   `html` collects the paths of the leaves that lie on an HTMLField
+ * @typedef {{type?: string, heldType?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[],
+ *   html: Set<string>, idArrays: Set<string>}} Walk
+ *   `html` collects the paths of the leaves that lie on an HTMLField, and `idArrays` those of the lists whose elements
+ *   are each given an `_id` of their own
  */
 /** @typedef {{path: string, problem: "unknown" | "field" | "reserved"}} RemovalProblem */
 
@@ -46,7 +49,7 @@ const isInstructionKey = (key) =>
  * expands into nested objects (common/data/fields.mjs:1162-1165).
  * @param {string} key
  */
-const isReservedKey = (key) => key.includes(".") || isInstructionKey(key);
+export const isReservedKey = (key) => key.includes(".") || isInstructionKey(key);
 
 /**
  * Looks at every key of the data, whatever field it lies below: a free-form object such as flags takes a reserved key
@@ -76,6 +79,17 @@ const NEEDS_TYPE =
 const isTypeData = (field) =>
   field !== null && typeof field === "object" && classChain(field).includes("TypeDataField");
 
+/** @param {any} field @param {unknown} value @param {string} path @param {Walk} walk */
+function checkSchema(field, value, path, walk) {
+  if (!isPlainObject(value)) return;
+  for (const [key, child] of plainEntries(value)) {
+    const inner = Object.hasOwn(field.fields ?? {}, key) ? field.fields[key] : undefined;
+    if (!inner) walk.problems.push({ path: join(path, key), problem: "unknown" });
+    else if (inner.persisted === false) walk.problems.push({ path: join(path, key), problem: "derived" });
+    else check(inner, child, join(path, key), walk);
+  }
+}
+
 /**
  * By class name, from a field's own class up through the classes it extends: the first name found decides how the
  * data below the field is checked. A field whose class leads to none of the entries before DataField takes anything
@@ -83,15 +97,7 @@ const isTypeData = (field) =>
  * @type {Readonly<Record<string, (field: any, value: unknown, path: string, walk: Walk) => void>>}
  */
 const STRUCTURES = Object.freeze({
-  SchemaField: (field, value, path, walk) => {
-    if (!isPlainObject(value)) return;
-    for (const [key, child] of plainEntries(value)) {
-      const inner = Object.hasOwn(field.fields ?? {}, key) ? field.fields[key] : undefined;
-      if (!inner) walk.problems.push({ path: join(path, key), problem: "unknown" });
-      else if (inner.persisted === false) walk.problems.push({ path: join(path, key), problem: "derived" });
-      else check(inner, child, join(path, key), walk);
-    }
-  },
+  SchemaField: checkSchema,
   // dnd5e MappingField stores a key outside initialKeys and then ignores it (dnd5e module/data/fields/mapping-field.mjs).
   TypedObjectField: (field, value, path, walk) => {
     if (!isPlainObject(value)) return;
@@ -107,7 +113,16 @@ const STRUCTURES = Object.freeze({
   },
   ArrayField: (field, value, path, walk) => {
     if (!Array.isArray(value)) return;
+    // An `_id` with a function as its initial value is made up for each element that comes without one, as in dnd5e
+    // module/data/abstract/active-effect-data-model.mjs:35. One without is a reference to another document.
+    if (typeof field.element?.fields?._id?.initial === "function") walk.idArrays.add(path);
     for (const [index, child] of value.entries()) check(field.element, child, join(path, index), walk);
+  },
+  // dnd5e picks the data model of a behavior's config by the type of the behavior it lies in (dnd5e
+  // module/data/activity/fields/applied-behavior-field.mjs:30-33).
+  AppliedBehaviorField: (field, value, path, walk) => {
+    const heldType = isPlainObject(value) && typeof value.type === "string" ? value.type : undefined;
+    checkSchema(field, value, path, { ...walk, heldType });
   },
   TypedSchemaField: (field, value, path, walk) => {
     if (!isPlainObject(value)) return;
@@ -132,13 +147,20 @@ const STRUCTURES = Object.freeze({
     const name = classChain(field).find((className) => Object.hasOwn(walk.schemaFor, className));
     const schemaFor = name === undefined ? undefined : walk.schemaFor[name];
     if (!schemaFor) return void walk.problems.push({ path, problem: "unchecked" });
-    const schema = schemaFor(value, field);
-    if (schema) return check(schema, value, path, walk);
-    const type = isPlainObject(value) && typeof value.type === "string" ? value.type : undefined;
+    const schema = schemaFor(value, field, walk.heldType);
+    if (schema) return check(schema, value, path, { ...walk, heldType: undefined });
+    const type = walk.heldType ?? (isPlainObject(value) && typeof value.type === "string" ? value.type : undefined);
     walk.problems.push({ path, problem: "model", type });
   },
   DataField: () => {}
 });
+
+/**
+ * @param {string | undefined} type
+ * @param {Readonly<Record<string, SchemaFor>>} schemaFor
+ * @returns {Walk}
+ */
+const newWalk = (type, schemaFor) => ({ type, schemaFor, problems: [], html: new Set(), idArrays: new Set() });
 
 /** @param {unknown} field @param {unknown} value @param {string} path @param {Walk} walk */
 function check(field, value, path, walk) {
@@ -165,8 +187,7 @@ function check(field, value, path, walk) {
 export function fieldProblems(schema, data, { type, schemaFor = {} } = {}) {
   const { fields = {} } = /** @type {{fields?: Record<string, unknown>}} */ (schema);
   if (type === undefined && Object.values(fields).some(isTypeData)) throw new TypeError(NEEDS_TYPE);
-  /** @type {Walk} */
-  const walk = { type, schemaFor, problems: [], html: new Set() };
+  const walk = newWalk(type, schemaFor);
   findReservedKeys(data, "", walk.problems);
   check(schema, data, "", walk);
   return walk.problems;
@@ -183,14 +204,28 @@ export function fieldProblems(schema, data, { type, schemaFor = {} } = {}) {
  * @returns {import("./data-diff.mjs").SameLeaf}
  */
 export function sameHtml(schema, data, canonical, { type, schemaFor = {} } = {}) {
-  /** @type {Walk} */
-  const walk = { type, schemaFor, problems: [], html: new Set() };
+  const walk = newWalk(type, schemaFor);
   check(schema, data, "", walk);
   return (path, wanted, stored) =>
     walk.html.has(path) &&
     typeof wanted === "string" &&
     typeof stored === "string" &&
     canonical(wanted) === canonical(stored);
+}
+
+/**
+ * Foundry gives an element of such a list a new random `_id` on every cleaning unless the data names one: the changes
+ * of an active effect, and in dnd5e an activity's behaviors, a summon or transform activity's profiles and a class's
+ * starting equipment.
+ * @param {object} schema a SchemaField
+ * @param {Record<string, unknown>} data the data whose lists are looked at
+ * @param {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>}} [options] as for fieldProblems
+ * @returns {string[]} the paths of the given lists whose elements are each given an `_id` of their own
+ */
+export function elementIdArrays(schema, data, { type, schemaFor = {} } = {}) {
+  const walk = newWalk(type, schemaFor);
+  check(schema, data, "", walk);
+  return [...walk.idArrays];
 }
 
 /**

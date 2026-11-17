@@ -5,6 +5,7 @@
 import { storedHtml } from "./fake-dom.ts";
 import {
   AngleField,
+  AppliedBehaviorField,
   ArrayField,
   BooleanField,
   ColorField,
@@ -16,11 +17,21 @@ import {
   ObjectField,
   SchemaField,
   StringField,
+  TypeDataField5e,
   TypedObjectField
 } from "./fake-system.ts";
 
-const isObject = (value: unknown): value is Record<string, any> =>
+export const isObject = (value: unknown): value is Record<string, any> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Merges the changes into the target in place, objects key by key: the part of foundry.utils.mergeObject the fakes use. */
+export function merge(target: Record<string, any>, changes: Record<string, any>) {
+  for (const [key, value] of Object.entries(changes)) {
+    if (isObject(value) && isObject(target[key])) merge(target[key], value);
+    else target[key] = isObject(value) ? merge({}, value) : value;
+  }
+  return target;
+}
 
 /**
  * Stands in for Foundry's deletion operator (common/data/operators.mjs:81): an update that holds one for a key deletes
@@ -60,6 +71,7 @@ function hexColour(text: string) {
 
 function initialOf(field: DataField): unknown {
   if (field.initial !== undefined) return typeof field.initial === "function" ? field.initial() : field.initial;
+  if (field.required === true) return undefined;
   if (field instanceof SchemaField) return cleanValue(field, {}, { partial: false });
   if (field instanceof ObjectField) return {};
   if (field instanceof ArrayField) return [];
@@ -87,19 +99,30 @@ function expandKeys(data: Record<string, any>) {
   }
 }
 
-type CleanOptions = { partial: boolean; source?: unknown };
+type CleanOptions = { partial: boolean; source?: unknown; heldType?: unknown };
+
+/** NumberField#_cleanType (common/data/fields.mjs:1526-1539): rounded to an integer or a step, and brought into the field's range. */
+function cleanNumber(field: DataField, value: number) {
+  let number = field.integer === true ? Math.round(value) : value;
+  const { min, max, step } = field;
+  if (typeof min === "number") number = Math.max(number, min);
+  if (typeof step === "number") number = toNearest(number, step);
+  return typeof max === "number" ? Math.min(number, max) : number;
+}
 
 /**
  * The value Foundry would store for a given one. A missing value, and null where the field does not take it, become
  * the field's initial value. A value of another type is cast and not refused: a string for a boolean is true only when
  * it reads "true", a numeric string becomes its number, a number for a string its text, anything but an object for a
- * schema an empty object. Numbers are rounded to an integer or a step and an angle is brought into 0 to 360, strings
- * are trimmed, an empty one where the field takes none becomes the initial value, and a colour is read as a hex
- * number. A schema drops the keys it does not have, and those of fields that are not stored. Where the update is
- * partial and the stored data has the object, only the given keys are cleaned; an object that is new, and every array
- * element, gets all its defaults.
+ * schema an empty object. Numbers are rounded to an integer or a step and brought into the field's range (measured: -3
+ * for a number with a minimum of 0 is stored as 0), an angle is brought into 0 to 360, strings are trimmed, an empty
+ * one where the field takes none becomes the initial value, and a colour is read as a hex number. A schema drops the
+ * keys it does not have, and those of fields that are not stored. Where the update is partial and the stored data has
+ * the object, only the given keys are cleaned; an object that is new, and every array element, gets all its defaults.
+ * An entry of a dnd5e TypeDataField5e is cleaned by the data model of its type, and measured, a new one given as a
+ * change keeps to the keys it gives while the objects below it get all their defaults.
  */
-export function cleanValue(field: DataField, value: unknown, { partial, source }: CleanOptions): unknown {
+export function cleanValue(field: DataField, value: unknown, { partial, source, heldType }: CleanOptions): unknown {
   if (value instanceof ForcedDeletion) return value;
   if (value === undefined) return initialOf(field);
   if (value === null) return field.nullable === true ? null : initialOf(field);
@@ -111,8 +134,7 @@ export function cleanValue(field: DataField, value: unknown, { partial, source }
     const number = typeof value === "string" ? Number(value) : value;
     if (typeof number !== "number" || !Number.isFinite(number)) return value;
     if (field instanceof AngleField) return ((number % 360) + 360) % 360;
-    if (field.integer === true) return Math.round(number);
-    return typeof field.step === "number" ? toNearest(number, field.step) : number;
+    return cleanNumber(field, number);
   }
   if (field instanceof StringField) {
     if (typeof value === "number") return String(value);
@@ -129,10 +151,18 @@ export function cleanValue(field: DataField, value: unknown, { partial, source }
     for (const [key, child] of Object.entries<DataField>(field.fields)) {
       if (child.persisted === false) delete data[key];
       else if (key in data || all) {
-        data[key] = cleanValue(child, data[key], { partial, source: (source as any)?.[key] });
+        // dnd5e hands a behavior's type down to its config (dnd5e module/data/activity/fields/applied-behavior-field.mjs:30-33).
+        const held = field instanceof AppliedBehaviorField ? data.type : undefined;
+        data[key] = cleanValue(child, data[key], { partial, source: (source as any)?.[key], heldType: held });
       }
     }
     return data;
+  }
+  if (field instanceof TypeDataField5e) {
+    if (!isObject(value)) return {};
+    const model = field.getModelForType(heldType ?? value.type ?? (source as any)?.type);
+    if (!model) return value;
+    return cleanValue(model.schema, value, { partial, source: partial ? (source ?? {}) : undefined });
   }
   if (field instanceof TypedObjectField) {
     const data: Record<string, any> = isObject(value) ? value : {};
@@ -155,7 +185,7 @@ export function validationErrors(field: DataField, value: unknown, path = ""): s
   const fail = (message: string) => [`${path}: ${message}`];
   if (value instanceof ForcedDeletion) return [];
   if (value === null) return field.nullable === true ? [] : fail("may not be null");
-  if (value === undefined) return [];
+  if (value === undefined) return field.required === true ? fail("may not be undefined") : [];
   if (field instanceof BooleanField) return typeof value === "boolean" ? [] : fail("must be a boolean");
   if (field instanceof NumberField) {
     if (typeof value !== "number" || !Number.isFinite(value)) return fail("must be a number");
@@ -184,6 +214,10 @@ export function validationErrors(field: DataField, value: unknown, path = ""): s
     return value.flatMap((element, index) => validationErrors(field.element, element, `${path}.${index}`));
   }
   if (field instanceof DocumentOwnershipField) return ownershipErrors(value, path);
+  if (field instanceof TypeDataField5e && isObject(value)) {
+    const model = field.getModelForType(value.type);
+    return model ? validationErrors(model.schema, value, path) : [];
+  }
   return [];
 }
 
@@ -209,6 +243,9 @@ export function sanitizeHtml(field: DataField, value: unknown): unknown {
     for (const key of Object.keys(value)) value[key] = sanitizeHtml(field.element, value[key]);
   } else if (field instanceof ArrayField && Array.isArray(value)) {
     return value.map((element) => sanitizeHtml(field.element, element));
+  } else if (field instanceof TypeDataField5e && isObject(value)) {
+    const model = field.getModelForType(value.type);
+    if (model) sanitizeHtml(model.schema, value);
   }
   return value;
 }

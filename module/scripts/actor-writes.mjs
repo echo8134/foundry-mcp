@@ -1,26 +1,21 @@
 import { derivedValues, withCreateDefaults } from "./actor-data.mjs";
 import { actorFolderPath, checkType, resolveActor, systemTypes } from "./actor-methods.mjs";
-import {
-  dropAt,
-  entriesToRemove,
-  explainRecasts,
-  givesValueOn,
-  hasPath,
-  pickData,
-  recastLeaves,
-  updateFor,
-  writeOutcome
-} from "./data-diff.mjs";
+import { dropAt, entriesToRemove, hasPath, pickData, updateFor, writeOutcome } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
-import {
-  explainFieldProblems,
-  explainRemovalProblems,
-  fieldProblems,
-  removalProblems,
-  sameHtml
-} from "./field-check.mjs";
+import { hasEmbedded, planEmbedded, writeEmbedded } from "./item-writes.mjs";
 import { claimNamed, FLAG_SCOPE, isManaged } from "./scope.mjs";
-import { canonicalHtml, checkUpdate, cleanedChanges, createMissingFolders, findFolder, loadTexture } from "./world.mjs";
+import { createMissingFolders, findFolder } from "./world.mjs";
+import {
+  checkAsked,
+  checkImage,
+  checkKeptAsGiven,
+  checkRemoval,
+  KINDS,
+  modelRefusal,
+  refuse,
+  wantedChanges,
+  writeOf
+} from "./write-checks.mjs";
 
 /** The inputs of ensure_actor that are the actor's own stored data, each under the name of its stored field. */
 const DATA_KEYS = Object.freeze(["name", "img", "system", "prototypeToken", "ownership", "flags"]);
@@ -31,17 +26,13 @@ const DATA_KEYS = Object.freeze(["name", "img", "system", "prototypeToken", "own
  */
 const NOT_ON_A_TOKEN_ACTOR = Object.freeze(["folder", "prototypeToken"]);
 
-/**
- * The bridge's own flag, on the actor and on its prototype token: a token dropped from an actor whose prototype token
- * has it would count as bridge-made.
- */
-const OWN_FLAGS = Object.freeze([`flags.${FLAG_SCOPE}`, `prototypeToken.flags.${FLAG_SCOPE}`]);
-
-const refuse = (message) => new MethodError("invalid_params", `${message} Nothing was written.`);
-
-const modelRefusal = (error) => refuse(`Foundry's actor model refuses the data: ${error.message}`);
-
-const actorSchema = () => CONFIG.Actor.documentClass.schema;
+/** What the result reports for each input of items and effects, and under which name. */
+const EMBEDDED_REPORTS = Object.freeze({
+  items: "items",
+  effects: "effects",
+  removeItems: "removedItems",
+  removeEffects: "removedEffects"
+});
 
 const askedData = (request) =>
   Object.fromEntries(DATA_KEYS.filter((key) => request[key] !== undefined).map((key) => [key, request[key]]));
@@ -91,44 +82,6 @@ async function findTarget({ actor: ref, name, folder, from }) {
   );
 }
 
-function checkAsked(asked, remove, type) {
-  const given = OWN_FLAGS.filter((path) => hasPath(asked, path));
-  if (given.length > 0) {
-    throw refuse(`${given.join(" and ")} cannot be given: it is the bridge's own flag, which only the bridge sets.`);
-  }
-  const problems = fieldProblems(actorSchema(), asked, { type });
-  if (problems.length > 0) {
-    throw refuse(
-      `${explainFieldProblems(problems)} get_schema with document Actor and type ${type} lists the stored fields.`
-    );
-  }
-  const removals = removalProblems(actorSchema(), remove, { type });
-  if (removals.length > 0) throw refuse(`remove: ${explainRemovalProblems(removals)}`);
-  const own = remove.filter((path) => OWN_FLAGS.some((flag) => path === flag || path.startsWith(`${flag}.`)));
-  if (own.length > 0) throw refuse(`remove: ${own.join(", ")} is the bridge's own flag, which stays.`);
-  const both = remove.filter((path) => givesValueOn(asked, path));
-  if (both.length > 0) {
-    throw refuse(`${both.join(", ")} is named in remove and given a value in the same call. Do one of the two.`);
-  }
-}
-
-function checkKeptAsGiven(asked, wanted) {
-  const recasts = recastLeaves(asked, wanted);
-  if (recasts.length > 0) throw refuse(`${explainRecasts(recasts)} Give each value as Foundry stores it.`);
-}
-
-/** An actor's image may be null, which is no image and nothing to load (common/data/fields.mjs:3742). */
-async function checkImage(img) {
-  if (typeof img === "string" && !(await loadTexture(img))) throw refuse(`The image ${img} could not be loaded.`);
-}
-
-/** What a write is to bring about, with the HTML fields of the wanted data compared by what they say. */
-const writeOf = (wanted, remove, type) => ({
-  wanted,
-  remove,
-  same: sameHtml(actorSchema(), wanted, canonicalHtml, { type })
-});
-
 /**
  * The actor of a token is its world actor with that token's own changes over it. Removing an entry from the token's
  * changes shows the world actor's entry again, so an entry the world actor has cannot be removed for one token.
@@ -158,28 +111,26 @@ async function planChange(actor, request, place) {
     );
   }
   const asked = askedData(request);
-  checkAsked(asked, remove, actor.type);
+  checkAsked(KINDS.Actor, asked, remove, actor.type);
   if (actor.isToken) checkTokenRemovals(actor, remove);
-  let wanted;
-  try {
-    wanted = cleanedChanges(actor, asked);
-  } catch (error) {
-    throw modelRefusal(error);
-  }
+  const wanted = wantedChanges(KINDS.Actor, actor, asked);
   checkKeptAsGiven(asked, wanted);
   if (wanted.img !== actor._source.img) await checkImage(wanted.img);
-  const removal = updateFor({ wanted: {}, remove }, actor._source, _del);
-  if (removal.writes) {
-    try {
-      checkUpdate(actor, removal.update);
-    } catch (error) {
-      const ownership = remove.some((path) => path.startsWith("ownership."));
-      throw refuse(
-        `Foundry's actor model refuses the removal: ${error.message}${ownership ? " To take a user's level away, give it as -1 in ownership instead." : ""}`
-      );
-    }
-  }
-  return { actor, data: null, write: writeOf(wanted, remove, actor.type), place };
+  const ownership = remove.some((path) => path.startsWith("ownership."));
+  checkRemoval(
+    KINDS.Actor,
+    actor,
+    remove,
+    "",
+    ownership ? " To take a user's level away, give it as -1 in ownership instead." : ""
+  );
+  return {
+    actor,
+    data: null,
+    write: writeOf(KINDS.Actor, wanted, remove, actor.type),
+    place,
+    embedded: hasEmbedded(request) ? await planEmbedded(actor, request) : null
+  };
 }
 
 async function copySource(from) {
@@ -205,7 +156,7 @@ async function planCreation(request, place) {
   }
   checkType(systemTypes("Actor"), type, "actor type");
   const given = askedData(request);
-  checkAsked(given, remove, type);
+  checkAsked(KINDS.Actor, given, remove, type);
   const asked = withCreateDefaults(type, given);
   // fromCompendium leaves out the id, the folder and the sort of the source, resets the ownership to the current
   // user, and records the source of a compendium actor (client/documents/abstract/world-collection.mjs:109-134).
@@ -219,12 +170,14 @@ async function planCreation(request, place) {
     // The constructor keeps the object it is given as the stored data and cleans it in place.
     built = new CONFIG.Actor.documentClass(structuredClone(data));
   } catch (error) {
-    throw modelRefusal(error);
+    throw modelRefusal(KINDS.Actor, error);
   }
   const wanted = pickData(built._source, asked);
   checkKeptAsGiven(asked, wanted);
   await checkImage(wanted.img);
-  return { actor: null, data, write: writeOf(wanted, remove, type), place };
+  // The items and effects are checked on the actor built from the data, and planned again on the one Foundry makes.
+  if (hasEmbedded(request)) await planEmbedded(built, request);
+  return { actor: null, data, write: writeOf(KINDS.Actor, wanted, remove, type), place, embedded: null };
 }
 
 async function planActor(request) {
@@ -295,17 +248,30 @@ function withMadeFolders(error, made) {
  */
 async function writeAgainWhatCreationDropped(actor, write) {
   if (writeOutcome(write, {}, actor._source).unapplied.length === 0) return;
-  await changeActor(actor, write, structuredClone(actor._source));
+  await changeActor(actor, write, actor.toObject());
+}
+
+/** A failed write of items or effects leaves the actor written, and says so. */
+function withActorWritten(error, actor, created, changed) {
+  if (!(error instanceof MethodError)) return error;
+  const written = created
+    ? `The actor ${actor.name} (${actor.id}) was created before that and stays.`
+    : changed.length > 0
+      ? `The actor's own data was changed before that (${changed.join(", ")}).`
+      : "The actor's own data was not changed.";
+  return new MethodError(error.code, `${error.message} ${written}`);
 }
 
 export async function ensureActor(request) {
   // Planned again inside the write queue: a write queued before this one may have created, renamed, moved or deleted
   // an actor or a folder since prepare looked.
-  const { actor: existing, data, write, place } = await planActor(request);
+  const { actor: existing, data, write, place, embedded: planned } = await planActor(request);
   const made = place?.missing ?? [];
   const folder = place ? await createMissingFolders("Actor", place) : undefined;
   if (place && request.folder !== undefined) write.wanted.folder = folder;
-  const before = existing ? structuredClone(existing._source) : {};
+  // toObject, not structuredClone: measured, the stored data of an actor that has certain items (a spell copied from
+  // a compendium) cannot be structured-cloned.
+  const before = existing ? existing.toObject() : {};
   let actor = existing;
   try {
     if (existing) await changeActor(existing, write, before);
@@ -316,6 +282,17 @@ export async function ensureActor(request) {
   } catch (error) {
     throw withMadeFolders(error, made);
   }
+  let embedded = {};
+  if (hasEmbedded(request)) {
+    try {
+      // The plan of a new actor was made on an actor built from its data. It is made again on the one Foundry
+      // created, which has the ids and what the system put into its items.
+      embedded = await writeEmbedded(actor, planned ?? (await planEmbedded(actor, request)));
+    } catch (error) {
+      const { changed } = writeOutcome(write, before, actor._source);
+      throw withMadeFolders(withActorWritten(error, actor, !existing, changed), made);
+    }
+  }
   return {
     id: actor.id,
     uuid: actor.uuid,
@@ -324,6 +301,11 @@ export async function ensureActor(request) {
     folder: actorFolderPath(actor),
     created: !existing,
     ...writeOutcome(write, before, actor._source),
+    ...Object.fromEntries(
+      Object.entries(EMBEDDED_REPORTS).flatMap(([input, key]) =>
+        request[input] === undefined ? [] : [[key, embedded[key]]]
+      )
+    ),
     derived: derivedValues(actor.system)
   };
 }
