@@ -17,9 +17,10 @@ describe("method list", () => {
     assert.deepEqual(
       { surface: SURFACE, methods: [...PROTOCOL_METHODS].sort() },
       {
-        surface: 2,
+        surface: 3,
         methods: [
           "create_walls",
+          "delete_tokens",
           "delete_walls",
           "ensure_scene",
           "get_actor",
@@ -28,8 +29,10 @@ describe("method list", () => {
           "get_schema",
           "list_actors",
           "list_scenes",
+          "place_tokens",
           "sync_lights",
-          "sync_walls"
+          "sync_walls",
+          "update_tokens"
         ]
       },
       "The method list changed: raise SURFACE in module/scripts/surface.mjs and update both here."
@@ -43,10 +46,13 @@ describe("method list", () => {
   it("gives each serialised method a time budget a few seconds below its tool's timeout", () => {
     assert.deepEqual(Object.keys(QUEUE_BUDGET_MS).sort(), [
       "create_walls",
+      "delete_tokens",
       "delete_walls",
       "ensure_scene",
+      "place_tokens",
       "sync_lights",
-      "sync_walls"
+      "sync_walls",
+      "update_tokens"
     ]);
     for (const [name, budget] of Object.entries(QUEUE_BUDGET_MS)) {
       assert.ok(

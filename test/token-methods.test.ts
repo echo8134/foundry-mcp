@@ -103,6 +103,53 @@ describe("get_scene tokens", () => {
   it("returns an empty list for a scene without tokens", async () => {
     assert.deepEqual((await methods.get_scene({ sceneId: scene.id })).tokens, []);
   });
+
+  it("returns the stored data of the tokens asked for, with id and the centre at in place of _id, x and y", async () => {
+    const token = world.addToken(scene, {
+      name: "Goblin",
+      x: 500,
+      y: 400,
+      hidden: true,
+      light: { dim: 20, bright: 10 },
+      flags: { dnd5e: { lockSize: true } },
+      delta: { system: { attributes: { hp: { value: 3 } } } }
+    });
+    world.addToken(scene, { name: "other" });
+    const { tokenData } = await methods.get_scene({ sceneId: scene.id, tokens: [token.id] });
+    assert.equal(tokenData.length, 1);
+    const [data] = tokenData;
+    assert.deepEqual(
+      [data.id, data.at, data.name, data.hidden, data.light, data.flags],
+      [token.id, [250, 250], "Goblin", true, { dim: 20, bright: 10, color: null }, { dnd5e: { lockSize: true } }]
+    );
+    for (const key of ["_id", "x", "y", "delta", "_movementHistory", "_regions"]) assert.equal(key in data, false, key);
+    const { at: _at, id: _id, ...stored } = data;
+    const { _id: _storedId, x: _x, y: _y, delta: _delta, _movementHistory, _regions, ...expected } = token._source;
+    assert.deepEqual(stored, expected);
+  });
+
+  it("measures a token's centre from its stored position, not from one the document shows while it animates", async () => {
+    const token = world.addToken(scene, { name: "Goblin", x: 500, y: 400 });
+    token.prepared.x = 533;
+    token.prepared.y = 441;
+    const read = await methods.get_scene({ sceneId: scene.id, tokens: [token.id] });
+    assert.deepEqual(
+      [read.tokens[0].at, read.tokenData[0].at],
+      [
+        [250, 250],
+        [250, 250]
+      ]
+    );
+  });
+
+  it("returns no token data unless asked, and answers not_found for an id that is not on the scene", async () => {
+    world.addToken(scene, { name: "Goblin" });
+    assert.deepEqual((await methods.get_scene({ sceneId: scene.id })).tokenData, []);
+    await assert.rejects(
+      methods.get_scene({ sceneId: scene.id, tokens: ["ghost"] }),
+      (error: any) => error.code === "not_found" && /no token with the id ghost/.test(error.message)
+    );
+  });
 });
 
 function stubDrawing() {
@@ -163,6 +210,16 @@ describe("get_scene_image showTokens", () => {
     assert.deepEqual([strokes[0], strokes[2]], ["#000000", "#000000"]);
     assert.notEqual(strokes[1], strokes[3], "friendly and hostile tokens differ in colour");
     assert.equal(fills[0]!.fillStyle, strokes[1]);
+  });
+
+  it("draws a token where it is stored, not where the document shows it while it animates", async () => {
+    const calls = stubDrawing();
+    const token = world.addToken(scene, { x: 500, y: 400 });
+    token.prepared.x = 900;
+    token.prepared.width = 3;
+    await methods.get_scene_image({ sceneId: scene.id, maxSize: 500, showTokens: true });
+    const [ellipse] = calls.filter((call) => call.op === "ellipse").map((call) => call.args.slice(0, 4));
+    assert.deepEqual(ellipse, [125, 125, 25, 25]);
   });
 
   it("gives each disposition its own colour, none of them a wall, door, light or darkness colour", async () => {

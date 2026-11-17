@@ -52,7 +52,7 @@ export async function listActors({ folder, type, name }) {
   return { folders: scope.folders, actors, total: matched.length, truncated: matched.length > MAX_ACTORS };
 }
 
-async function resolveActor(ref) {
+export async function resolveActor(ref) {
   if (!ref.includes(".")) {
     const actor = game.actors.get(ref);
     if (actor) return actor;

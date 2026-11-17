@@ -1,5 +1,5 @@
 import { lightMarkers } from "./light-data.mjs";
-import { tokenMarkers } from "./token-data.mjs";
+import { storedCentre, tokenMarkers } from "./token-data.mjs";
 
 const WALL_COLOR = "#ff2d2d";
 const DOOR_COLOR = "#2d7bff";
@@ -62,8 +62,8 @@ export function drawLights(context, scene, rect, width, height) {
 export function drawTokens(context, scene, rect, width, height) {
   const lineWidth = Math.max(2, Math.round(Math.max(width, height) / 400));
   const placed = scene.tokens.map((token) => {
-    const { x, y } = token.getCenterPoint();
-    return { x, y, ...token.getSize(), disposition: token.disposition, hidden: token.hidden };
+    const { x, y } = storedCentre(token);
+    return { x, y, ...token.getSize(token._source), disposition: token.disposition, hidden: token.hidden };
   });
   for (const marker of tokenMarkers(placed, rect, { width, height })) {
     const color = TOKEN_COLORS[marker.disposition] ?? TOKEN_COLORS[0];

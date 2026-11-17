@@ -64,7 +64,7 @@ function mapValues(object, describe) {
 }
 
 /** @param {unknown} keys @returns {string[] | null} */
-function initialKeys(keys) {
+export function initialKeys(keys) {
   if (Array.isArray(keys)) return keys.map(String);
   return keys !== null && typeof keys === "object" ? Object.keys(keys) : null;
 }
@@ -104,8 +104,8 @@ function leaf(kind, field) {
   return parts.join(", ");
 }
 
-/** @param {object} field @returns {string[]} */
-function classChain(field) {
+/** @param {object} field @returns {string[]} the class names from the field's own class up through the classes it extends */
+export function classChain(field) {
   const names = [];
   for (let type = field.constructor; typeof type === "function" && type.name; type = Object.getPrototypeOf(type)) {
     names.push(type.name);

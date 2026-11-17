@@ -10,7 +10,9 @@ export class DataField {
 }
 export class BooleanField extends DataField {}
 export class NumberField extends DataField {}
+export class AngleField extends NumberField {}
 export class StringField extends DataField {}
+export class ColorField extends StringField {}
 export class HTMLField extends StringField {}
 export class FilePathField extends StringField {}
 export class DocumentIdField extends StringField {}
@@ -44,6 +46,11 @@ export class TypedObjectField extends ObjectField {
     this.element = element;
   }
 }
+export class DocumentFlagsField extends TypedObjectField {
+  constructor() {
+    super(new ObjectField());
+  }
+}
 export class TypedSchemaField extends DataField {
   constructor(types: Record<string, SchemaField>, options: Record<string, any> = {}) {
     super(options);
@@ -53,7 +60,9 @@ export class TypedSchemaField extends DataField {
 export class FormulaField extends StringField {}
 export class IdentifierField extends StringField {}
 export class MappingField extends TypedObjectField {}
-export class AdvancementDataField extends TypeDataField {
+/** dnd5e's TypeDataField5e: the data model of an entry comes from the `getModel` function it was built with. */
+export class TypeDataField5e extends ObjectField {}
+export class AdvancementDataField extends TypeDataField5e {
   constructor(typeModel?: { schema: SchemaField }) {
     super();
     this.typeModel = typeModel;
@@ -64,8 +73,51 @@ export class AdvancementDataField extends TypeDataField {
 }
 export class ActivitiesField extends MappingField {
   constructor() {
-    super(new ObjectField());
+    super(new TypeDataField5e());
   }
+}
+
+/**
+ * The token fields a test uses, with the initial values of Foundry's own (common/documents/token.mjs:53-189). A level id
+ * is not checked for its form, because a test scene names its levels freely.
+ */
+export function tokenSchema() {
+  const integer = (initial: number) => new NumberField({ integer: true, initial });
+  return new SchemaField({
+    _id: new DocumentIdField({ nullable: true, initial: null }),
+    name: new StringField({ initial: "" }),
+    actorId: new DocumentIdField({ nullable: true, initial: null }),
+    actorLink: new BooleanField({ initial: false }),
+    delta: new ObjectField(),
+    x: integer(0),
+    y: integer(0),
+    elevation: new NumberField({ initial: 0 }),
+    width: new NumberField({ positive: true, initial: 1 }),
+    height: new NumberField({ positive: true, initial: 1 }),
+    depth: new NumberField({ min: 0, initial: 1 }),
+    // CONST.TOKEN_SHAPES. A token on a grid that is not hexagonal gets RECTANGLE_1 (common/documents/token.mjs:231-233).
+    shape: new NumberField({ integer: true, choices: [0, 1, 2, 3, 4, 5], initial: 4 }),
+    level: new DocumentIdField({ nullable: false }),
+    sort: integer(0),
+    rotation: new AngleField({ initial: 0 }),
+    hidden: new BooleanField({ initial: false }),
+    disposition: new NumberField({ integer: true, choices: [-2, -1, 0, 1], initial: -1 }),
+    texture: new SchemaField({ src: new FilePathField({ nullable: true, initial: "icons/svg/mystery-man.svg" }) }),
+    light: new SchemaField({
+      dim: new NumberField({ min: 0, step: 0.01, initial: 0 }),
+      bright: new NumberField({ min: 0, step: 0.01, initial: 0 }),
+      color: new ColorField({ nullable: true, initial: null })
+    }),
+    detectionModes: new TypedObjectField(
+      new SchemaField({
+        enabled: new BooleanField({ initial: true }),
+        range: new NumberField({ min: 0, step: 0.01, nullable: true, initial: null })
+      })
+    ),
+    flags: new DocumentFlagsField(),
+    _movementHistory: new ArrayField(new ObjectField()),
+    _regions: new ArrayField(new DocumentIdField())
+  });
 }
 
 /** A small dnd5e: a few actor, item and effect types with their system models, and the CONFIG.DND5E tables get_schema reads. */
@@ -144,10 +196,9 @@ export function systemConfig() {
     },
     Token: {
       documentClass: {
-        schema: new SchemaField({
-          disposition: new NumberField({ integer: true, choices: [-2, -1, 0, 1], initial: -1 }),
-          level: new DocumentIdField({ nullable: false })
-        })
+        // Foundry's BaseToken.MOVEMENT_FIELDS (common/documents/token.mjs:204).
+        MOVEMENT_FIELDS: Object.freeze(["x", "y", "elevation", "width", "height", "depth", "shape", "level"]),
+        schema: tokenSchema()
       }
     },
     DND5E: {

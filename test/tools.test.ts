@@ -28,11 +28,12 @@ async function connect(answer: (call: Call) => unknown | Promise<unknown>) {
 const text = (result: unknown) => (result as { content: { text: string }[] }).content[0]!.text;
 
 describe("MCP tools", () => {
-  it("lists exactly the eleven tools with model-facing descriptions", async () => {
+  it("lists exactly the fourteen tools with model-facing descriptions", async () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "create_walls",
+      "delete_tokens",
       "delete_walls",
       "ensure_scene",
       "get_actor",
@@ -41,8 +42,10 @@ describe("MCP tools", () => {
       "get_schema",
       "list_actors",
       "list_scenes",
+      "place_tokens",
       "sync_lights",
-      "sync_walls"
+      "sync_walls",
+      "update_tokens"
     ]);
     const createWalls = tools.find((t) => t.name === "create_walls")!;
     assert.match(createWalls.description ?? "", /paths/);
@@ -435,6 +438,117 @@ describe("MCP tools", () => {
     await client.callTool({ name: "sync_lights", arguments: { lights: [] } });
     assert.deepEqual(calls[1]!.params, { lights: [] });
   });
+
+  it("sends token entries to the bridge with every token field they carry, for the module to check", async () => {
+    const { client, calls } = await connect(() => ({}));
+    const place = {
+      sceneId: "scene1",
+      frame: { width: 10, height: 8 },
+      tokens: [{ actor: "a1", at: [1.5, 2.5], snap: false, hidden: true, light: { dim: 20 }, hiden: 1 }]
+    };
+    const update = { tokens: [{ id: "t1", at: [3, 4], rotation: 90, flags: { dnd5e: { lockSize: true } } }] };
+    for (const [name, args] of [
+      ["place_tokens", place],
+      ["update_tokens", update],
+      ["delete_tokens", { ids: ["t1"] }],
+      ["get_scene", { tokens: ["t1"] }]
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.notEqual(result.isError, true, name);
+    }
+    assert.deepEqual(
+      calls.map((call) => [call.method, call.params, call.timeoutMs]),
+      [
+        ["place_tokens", place, 30_000],
+        ["update_tokens", update, 30_000],
+        ["delete_tokens", { ids: ["t1"] }, 30_000],
+        ["get_scene", { tokens: ["t1"] }, 30_000]
+      ]
+    );
+  });
+
+  for (const [label, name, args, message] of [
+    ["place_tokens without tokens", "place_tokens", { tokens: [] }, />=1 items at tokens$/],
+    [
+      "a token to place without at",
+      "place_tokens",
+      { tokens: [{ actor: "a1" }] },
+      /expected tuple.* at tokens\[0\]\.at$/
+    ],
+    ["update_tokens with snap but no at", "update_tokens", { tokens: [{ id: "t1", snap: false }] }, /snap needs at/],
+    ["delete_tokens without ids", "delete_tokens", { ids: [] }, />=1 items at ids$/]
+  ] as const) {
+    it(`refuses ${label} before any request is sent`, async () => {
+      const { client, calls } = await connect(() => ({}));
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+      assert.match(text(result), message);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  it("tells a caller of the token tools what at, snap, disposition, movement and size mean", async () => {
+    const { client } = await connect(() => ({}));
+    const { tools } = await client.listTools();
+    const description = (name: string) => tools.find((t) => t.name === name)!.description ?? "";
+    for (const name of ["place_tokens", "update_tokens"]) {
+      assert.match(description(name), /`at` is the token's centre/, name);
+      assert.match(description(name), /-2 secret, -1 hostile, 0 neutral, 1 friendly/, name);
+      assert.match(description(name), /flags\.dnd5e\.lockSize/, name);
+      assert.match(description(name), /unapplied/, name);
+    }
+    assert.match(description("place_tokens"), /Not safe to repeat/);
+    assert.match(description("place_tokens"), /prototype token/);
+    assert.match(description("update_tokens"), /teleport: no wall stops it/);
+    assert.match(description("update_tokens"), /nothing is written/);
+    assert.match(description("delete_tokens"), /combats/);
+    assert.match(description("delete_tokens"), /unlinked token's own actor data/);
+    assert.match(description("get_scene"), /tokenData/);
+    const snap = (TOOLS.place_tokens.input as any).shape.tokens.element.shape.snap.description;
+    assert.match(snap, /Default true/);
+  });
+
+  it("tells a caller of the token tools what dnd5e and Foundry do with a token's data, as measured", async () => {
+    const { client } = await connect(() => ({}));
+    const { tools } = await client.listTools();
+    const description = (name: string) => tools.find((t) => t.name === name)!.description ?? "";
+    for (const name of ["place_tokens", "update_tokens"]) {
+      assert.match(description(name), /size from its actor's size when the actor's size changes/, name);
+      assert.match(description(name), /whose far edges are outside/, name);
+      assert.match(description(name), /keys with a dot or a leading -= or == are refused/, name);
+      assert.match(description(name), /a value Foundry would store as something else/, name);
+    }
+    for (const name of ["place_tokens", "update_tokens", "get_scene"]) {
+      assert.match(description(name), /senseVisionSync setting is on \(its default\)/, name);
+      assert.match(description(name), /set vision range on the actor/, name);
+      assert.doesNotMatch(description(name), /whenever the actor changes/, name);
+    }
+    assert.match(description("get_scene"), /resets them when the actor's size changes/);
+    assert.match(description("get_scene"), /An entry passed back unchanged writes nothing/);
+    assert.match(description("place_tokens"), /the error names it and the tokens created before it/);
+    assert.match(description("update_tokens"), /A level change keeps the elevation, so give elevation with level/);
+    assert.match(description("update_tokens"), /falling, and records the move on the token's actor/);
+    assert.match(description("update_tokens"), /tokenData can be passed back as it is/);
+    assert.match(description("update_tokens"), /an at equal to the token's centre moves nothing, whatever snap says/);
+    assert.match(description("update_tokens"), /changed \(the field paths whose stored value changed\)/);
+    assert.doesNotMatch(description("update_tokens"), /on any scene/);
+  });
+
+  for (const tool of ["place_tokens", "update_tokens", "delete_tokens"] as const) {
+    it(`a timeout on ${tool} warns that it may have been applied, and says how to go on`, async () => {
+      const { client } = await connect(() => {
+        throw new BridgeError("timeout", "Foundry did not answer.");
+      });
+      const args = {
+        place_tokens: { tokens: [{ actor: "a1", at: [0, 0] }] },
+        update_tokens: { tokens: [{ id: "t1", hidden: true }] },
+        delete_tokens: { ids: ["t1"] }
+      }[tool];
+      const result = await client.callTool({ name: tool, arguments: args });
+      assert.match(text(result), /may still have been applied in Foundry/);
+      assert.match(text(result), tool === "update_tokens" ? /same call again is safe/ : /get_scene before retrying/);
+    });
+  }
 
   it("sends showLights to the bridge for get_scene_image", async () => {
     const { client, calls } = await connect(() => ({

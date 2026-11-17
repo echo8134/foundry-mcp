@@ -16,7 +16,10 @@ export const METHODS = [
   "ensure_scene",
   "list_actors",
   "get_actor",
-  "get_schema"
+  "get_schema",
+  "place_tokens",
+  "update_tokens",
+  "delete_tokens"
 ] as const;
 export type Method = (typeof METHODS)[number];
 

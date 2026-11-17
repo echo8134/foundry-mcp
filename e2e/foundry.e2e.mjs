@@ -841,6 +841,337 @@ try {
       const { keys } = await tool(client, "get_schema", { document: "Config", type: "abilities" });
       assert(typeof keys.str === "string" && !keys.str.startsWith("DND5E."), `str label was ${keys.str}`);
     });
+
+    const tokenCount = () => page.evaluate((id) => game.scenes.get(id).tokens.size, sceneId);
+    let placed;
+    await check("place_tokens refuses an unknown token field and writes nothing", async () => {
+      const before = await tokenCount();
+      await assertRejects(
+        tool(client, "place_tokens", {
+          sceneId,
+          tokens: [
+            { actor: made.actorId, at: [250, 350] },
+            { actor: made.actorId, at: [450, 350], hiden: true }
+          ]
+        }),
+        /tokens\[1\]: No such field: hiden/
+      );
+      same(await tokenCount(), before, "tokens in the page");
+    });
+
+    await check("place_tokens places two tokens of the npc with their centres on the cells asked for", async () => {
+      const result = await tool(client, "place_tokens", {
+        sceneId,
+        tokens: [
+          { actor: made.actorId, at: [250, 350] },
+          { actor: made.actorId, at: [440, 360] }
+        ]
+      });
+      same(
+        [result.created, result.requested, result.tokens.map((t) => [t.actorId, t.at, t.unapplied])],
+        [
+          2,
+          2,
+          [
+            [made.actorId, [250, 350], undefined],
+            [made.actorId, [450, 350], undefined]
+          ]
+        ],
+        "placed"
+      );
+      placed = result.tokens.map((t) => t.id);
+      const inPage = await page.evaluate(
+        (id, ids) =>
+          ids.map((tokenId) => {
+            const token = game.scenes.get(id).tokens.get(tokenId);
+            return [
+              token.x,
+              token.y,
+              token.flags["foundry-mcp"]?.managed,
+              token.level === game.scenes.get(id).initialLevel.id,
+              token.sort
+            ];
+          }),
+        sceneId,
+        placed
+      );
+      same(
+        inPage,
+        [
+          [500, 500, true, true, 1],
+          [700, 500, true, true, 2]
+        ],
+        "tokens in the page, each stacked above the ones before it"
+      );
+    });
+
+    await check(
+      "update_tokens moves one token as a teleport and hides the other, and a repeat writes nothing",
+      async () => {
+        const args = {
+          sceneId,
+          tokens: [
+            { id: placed[0], at: [650, 550] },
+            { id: placed[1], hidden: true }
+          ]
+        };
+        const result = await tool(client, "update_tokens", args);
+        same(
+          result.tokens,
+          [
+            { id: placed[0], at: [650, 550], changed: ["at"] },
+            { id: placed[1], at: [450, 350], changed: ["hidden"] }
+          ],
+          "updated"
+        );
+        const inPage = await page.evaluate(
+          (id, ids) => ids.map((tokenId) => game.scenes.get(id).tokens.get(tokenId)).map((t) => [t.x, t.y, t.hidden]),
+          sceneId,
+          placed
+        );
+        same(
+          inPage,
+          [
+            [900, 700, false],
+            [700, 500, true]
+          ],
+          "tokens in the page"
+        );
+        const again = await tool(client, "update_tokens", args);
+        same(
+          again.tokens.map((t) => t.changed),
+          [[], []],
+          "changed on the repeat"
+        );
+      }
+    );
+
+    await check(
+      "the token model's refusals stop a write, and so does a value Foundry would store as something else",
+      async () => {
+        const before = await tokenCount();
+        await assertRejects(
+          tool(client, "place_tokens", { sceneId, tokens: [{ actor: made.actorId, at: [250, 350], disposition: 5 }] }),
+          /tokens\[0\]: Foundry's token model refuses the data/
+        );
+        same(await tokenCount(), before, "tokens in the page after the refused placement");
+        await assertRejects(
+          tool(client, "update_tokens", {
+            sceneId,
+            tokens: [
+              { id: placed[0], hidden: true },
+              { id: placed[1], light: { dim: "wide" } }
+            ]
+          }),
+          /tokens\[1\]: Foundry's token model refuses the data/
+        );
+        same(
+          await page.evaluate((id, tokenId) => game.scenes.get(id).tokens.get(tokenId).hidden, sceneId, placed[0]),
+          false,
+          "hidden after the refused update"
+        );
+        const stored = () =>
+          page.evaluate(
+            (id, ids) =>
+              ids.map((tokenId) => {
+                const source = game.scenes.get(id).tokens.get(tokenId)._source;
+                return [source.rotation, source.hidden, source.flags["foundry-mcp"]];
+              }),
+            sceneId,
+            placed
+          );
+        const untouched = await stored();
+        same(
+          untouched,
+          [
+            [0, false, { managed: true }],
+            [0, true, { managed: true }]
+          ],
+          "stored before the refused values"
+        );
+        await assertRejects(
+          tool(client, "update_tokens", { sceneId, tokens: [{ id: placed[0], rotation: 370 }] }),
+          /tokens\[0\]: Foundry would not store these values as given: rotation: 370 would be stored as 10\./
+        );
+        await assertRejects(
+          tool(client, "update_tokens", { sceneId, tokens: [{ id: placed[1], hidden: "yes" }] }),
+          /hidden: "yes" would be stored as false\..*Nothing was written\.$/
+        );
+        await assertRejects(
+          tool(client, "update_tokens", { sceneId, tokens: [{ id: placed[1], light: null }] }),
+          /light: null would be stored as \{/
+        );
+        same(await stored(), untouched, "stored after the refused values: the hidden token is still hidden");
+        const colour = () =>
+          page.evaluate(
+            (id, tokenId) => game.scenes.get(id).tokens.get(tokenId)._source.light.color,
+            sceneId,
+            placed[0]
+          );
+        const colourBefore = await colour();
+        await assertRejects(
+          tool(client, "update_tokens", { sceneId, tokens: [{ id: placed[0], light: { color: "blue" } }] }),
+          /light\.color: "blue" would be stored as "#00000b"\..*Nothing was written\.$/
+        );
+        same(await colour(), colourBefore, "light colour after the refused colour name");
+      }
+    );
+
+    await check("update_tokens refuses keys Foundry would expand or read as an instruction", async () => {
+      for (const flags of [
+        { "foundry-mcp.managed": false },
+        { "-=foundry-mcp": null },
+        { "==foundry-mcp": { managed: false } }
+      ]) {
+        await assertRejects(
+          tool(client, "update_tokens", { sceneId, tokens: [{ id: placed[0], flags }] }),
+          /tokens\[0\]: Not a plain key: "[^"]*foundry-mcp[^"]*" in flags\./
+        );
+      }
+      await assertRejects(
+        tool(client, "place_tokens", {
+          sceneId,
+          tokens: [{ actor: made.actorId, at: [250, 350], flags: { "foundry-mcp.managed": false } }]
+        }),
+        /Not a plain key: "foundry-mcp\.managed" in flags\./
+      );
+      same(
+        await page.evaluate(
+          (id, ids) => ids.map((tokenId) => game.scenes.get(id).tokens.get(tokenId)._source.flags["foundry-mcp"]),
+          sceneId,
+          placed
+        ),
+        [{ managed: true }, { managed: true }],
+        "the bridge's flag after the refused keys"
+      );
+    });
+
+    await check(
+      "update_tokens puts a token of the viewed scene exactly where it is told, with its centre on a wall",
+      async () => {
+        const [large] = (
+          await tool(client, "place_tokens", {
+            sceneId,
+            tokens: [{ actor: made.actorId, at: [300, 300], width: 2, height: 2 }]
+          })
+        ).tokens;
+        const viewedBefore = await page.evaluate(async (id) => {
+          const scene = game.scenes.get(id);
+          const before = canvas.scene?.id ?? null;
+          await scene.createEmbeddedDocuments("Wall", [{ c: [800, 200, 800, 1000] }]);
+          await scene.view();
+          return before;
+        }, sceneId);
+        try {
+          same(
+            await page.evaluate((id) => [canvas.scene?.id === id, canvas.ready], sceneId),
+            [true, true],
+            "the scene is viewed"
+          );
+          const move = { sceneId, tokens: [{ id: large.id, at: [500, 300] }] };
+          const moved = await tool(client, "update_tokens", move);
+          same(moved.tokens, [{ id: large.id, at: [500, 300], changed: ["at"] }], "moved onto the wall line");
+          same(
+            await page.evaluate(
+              (id, tokenId) => {
+                const source = game.scenes.get(id).tokens.get(tokenId)._source;
+                return [source.x, source.y];
+              },
+              sceneId,
+              large.id
+            ),
+            [700, 400],
+            "stored corner"
+          );
+          same(
+            (await tool(client, "update_tokens", move)).tokens,
+            [{ id: large.id, at: [500, 300], changed: [] }],
+            "repeat"
+          );
+        } finally {
+          await page.evaluate(
+            async (id, tokenId, before) => {
+              const scene = game.scenes.get(id);
+              const other = game.scenes.get(before);
+              if (other && other.id !== id) await other.view();
+              await scene.deleteEmbeddedDocuments("Token", [tokenId]);
+              await scene.deleteEmbeddedDocuments(
+                "Wall",
+                scene.walls.map((wall) => wall.id)
+              );
+            },
+            sceneId,
+            large.id,
+            viewedBefore
+          );
+        }
+      }
+    );
+
+    await check("get_scene reads both tokens back, with their full stored data when asked", async () => {
+      const scene = await tool(client, "get_scene", { sceneId, tokens: placed });
+      const listed = placed.map((id) => scene.tokens.find((t) => t.id === id));
+      same(
+        listed.map((t) => [t.at, t.hidden, t.managed]),
+        [
+          [[650, 550], false, true],
+          [[450, 350], true, true]
+        ],
+        "listed tokens"
+      );
+      same(
+        scene.tokenData.map((t) => [t.id, t.at, t.actorId, t.hidden, "x" in t, "_id" in t, "delta" in t]),
+        [
+          [placed[0], [650, 550], made.actorId, false, false, false, false],
+          [placed[1], [450, 350], made.actorId, true, false, false, false]
+        ],
+        "token data"
+      );
+    });
+
+    await check(
+      "update_tokens takes tokenData entries back as they were read and writes nothing, also for a token off the grid",
+      async () => {
+        const nudged = await tool(client, "update_tokens", {
+          sceneId,
+          tokens: [{ id: placed[0], at: [655, 553], snap: false }]
+        });
+        same(nudged.tokens, [{ id: placed[0], at: [655, 553], changed: ["at"] }], "moved off the grid");
+        const stored = () =>
+          page.evaluate(
+            (id, ids) => ids.map((tokenId) => JSON.stringify(game.scenes.get(id).tokens.get(tokenId)._source)),
+            sceneId,
+            placed
+          );
+        const before = await stored();
+        const { tokenData } = await tool(client, "get_scene", { sceneId, tokens: placed });
+        same(
+          tokenData.map((t) => [t.at, t.actorId, t.flags["foundry-mcp"]]),
+          [
+            [[655, 553], made.actorId, { managed: true }],
+            [[450, 350], made.actorId, { managed: true }]
+          ],
+          "token data read"
+        );
+        const result = await tool(client, "update_tokens", { sceneId, tokens: tokenData });
+        same(
+          result.tokens,
+          [
+            { id: placed[0], at: [655, 553], changed: [] },
+            { id: placed[1], at: [450, 350], changed: [] }
+          ],
+          "passed back"
+        );
+        same(await stored(), before, "stored data after the entries were passed back");
+      }
+    );
+
+    await check("delete_tokens deletes both and ignores an id that is not on the scene", async () => {
+      const before = await tokenCount();
+      const result = await tool(client, "delete_tokens", { sceneId, ids: [...placed, "notATokenId00000"] });
+      same(result.deleted, 2, "deleted");
+      same(await tokenCount(), before - 2, "tokens in the page");
+    });
   } finally {
     await page
       .evaluate(

@@ -187,6 +187,44 @@ const syncLightsInput = z
     ctx.value = { ...ctx.value, lights: kept };
   });
 
+const tokenIds = z.array(z.string().min(1));
+
+const tokenAt = pointSchema.describe("The token's centre in `frame` coordinates.");
+
+const tokenSnap = z
+  .boolean()
+  .optional()
+  .describe("Snap the token to the grid as a drop onto the map does. Default true.");
+
+// The module checks the other keys of an entry against the live token schema, which the server cannot know.
+const placeTokenSchema = z.looseObject({
+  actor: nonBlank.describe("World actor id, or Actor.<id>."),
+  at: tokenAt,
+  snap: tokenSnap
+});
+
+const updateTokenSchema = z
+  .looseObject({ id: z.string().min(1).describe("Token id from get_scene."), at: tokenAt.optional(), snap: tokenSnap })
+  .refine((entry) => entry.snap === undefined || entry.at !== undefined, { message: "snap needs at." });
+
+const SENSES_SET_VISION =
+  "while dnd5e's senseVisionSync setting is on (its default), a token whose actor has a sense that grants sight " +
+  "takes its sight range, vision mode and detection modes from the actor's senses: set vision range on the actor, " +
+  "and light, sight.angle and sight.enabled on the token";
+
+const TOKEN_ENTRY =
+  "`at` is the token's centre in `frame` (omit frame for scene pixels) and must lie inside the scene rectangle, " +
+  "whose far edges are outside. Any other key is a stored token field (get_schema with document Token lists them), " +
+  "for example hidden, elevation, level, rotation, name, disposition (-2 secret, -1 hostile, 0 neutral, 1 friendly), " +
+  "actorLink, texture, light, sight, width, height, flags. x, y, delta, keys starting with _ and keys with a dot or " +
+  "a leading -= or == are refused. width and height are stored, but dnd5e sets a creature token's size from its " +
+  "actor's size when the actor's size changes, unless flags.dnd5e.lockSize is true. And " +
+  SENSES_SET_VISION +
+  ". A request that cannot be built is refused before anything is written: an unknown field, data Foundry's token " +
+  "model refuses, and a value Foundry would store as something else (a text for a boolean or a number, null for a " +
+  "field that takes none, a rotation below 0 or of 360 or more, a colour not given as #rrggbb), named with what it " +
+  "would store. An object without keys (light: {}) asks for nothing and changes nothing; these tools remove no key.";
+
 const imageResultSchema = z.object({
   mimeType: z.string(),
   data: z.string(),
@@ -220,10 +258,18 @@ const SPECS: Record<Method, ToolSpec> = {
       "to ([] is all levels). `managed` is true for walls and lights made by this bridge (create_walls, sync_walls, " +
       "sync_lights) and false for those placed by hand. Tokens are `{id, name, actorId, actorLink, at, width, height, " +
       "elevation, level, hidden, disposition, rotation, managed, hp}`: `at` is the centre in the same frame, width and " +
-      "height in grid cells (dnd5e resets them from the actor's size unless the token has flags.dnd5e.lockSize), " +
-      "elevation in grid distance units, level the one level id the token is on, disposition -2 secret, -1 hostile, " +
-      "0 neutral, 1 friendly, and hp {value, max} of the token's own actor when it has hit points.",
-    input: z.object({ sceneId })
+      "height in grid cells (dnd5e resets them when the actor's size changes, unless the token has " +
+      "flags.dnd5e.lockSize), elevation in grid distance units, level the one level id the token is on, disposition " +
+      "-2 secret, -1 hostile, 0 neutral, 1 friendly, and hp {value, max} of the token's own actor when it has hit " +
+      "points. Pass token ids as tokens to get their full stored data in tokenData, in the shape update_tokens " +
+      "takes: id and at in place of _id, x and y. An entry passed back unchanged writes nothing. The stored sight " +
+      "is not always what a token sees: " +
+      SENSES_SET_VISION +
+      ".",
+    input: z.object({
+      sceneId,
+      tokens: tokenIds.optional().describe("Ids of tokens to return in full in tokenData.")
+    })
   }),
   get_scene_image: defineTool({
     description:
@@ -498,6 +544,58 @@ const SPECS: Record<Method, ToolSpec> = {
       type: nonBlank.optional().describe("A type of the document, or a Config table name."),
       path: nonBlank.optional().describe("Dot path into the field tree, for example system.abilities.")
     })
+  }),
+  place_tokens: defineTool({
+    ifOutcomeUnknown: CHECK_WITH_GET_SCENE,
+    description:
+      "Place tokens of world actors, as a drop from the Actors tab does: each starts from its actor's prototype " +
+      "token, with numbered copies, a wildcard image, and linked or not as the prototype says unless actorLink is " +
+      "given. level defaults to the scene's initial level and elevation to that level's base. dnd5e may roll an " +
+      "unlinked npc's hit points, as its world setting says. actorId is refused: give actor. " +
+      TOKEN_ENTRY +
+      " Returns created and requested, the tokens made as {id, name, actorId, at, unapplied: given fields that a " +
+      "hook or the system stored otherwise}, and the scene. Foundry skips a token that a hook refuses and creates " +
+      "the rest, so created below requested is a partial success. If Foundry fails on an entry, the error names it " +
+      "and the tokens created before it, and the entries after it are not tried. Not safe to repeat: each call " +
+      "places the tokens again. Tokens made here are flagged as bridge-made (managed: true in get_scene)." +
+      SAFER_SCENE_ID,
+    input: z.object({
+      sceneId,
+      frame: frameSchema.optional().describe(frameDescription),
+      tokens: z.array(placeTokenSchema).min(1)
+    })
+  }),
+  update_tokens: defineTool({
+    ifOutcomeUnknown:
+      " The call may still have been applied in Foundry. Running the same call again is safe: it writes only what still differs.",
+    description:
+      "Change tokens by id, hand-placed ones too. Only the given fields whose value differs from the stored one " +
+      "are written. A change of at, elevation, size, shape or level moves the token as Foundry's own token " +
+      "configuration does, as a teleport: no wall stops it and no level-change dialog opens. at is measured with " +
+      "the token's size after the change; without at the top-left corner stays. A level change keeps the " +
+      "elevation, so give elevation with level. dnd5e may mark a token that ends above the ground as falling, and " +
+      "records the move on the token's actor. An entry of get_scene's tokenData can be passed back as it is: " +
+      "actorId and flags.foundry-mcp are taken while they equal the stored ones, and an at equal to the token's " +
+      "centre moves nothing, whatever snap says. " +
+      TOKEN_ENTRY +
+      " If an id is not on the scene, nothing is written. Returns per token {id, at (the centre after the write), " +
+      "changed (the field paths whose stored value changed), unapplied (the field paths whose stored value is not " +
+      "the one asked for, at for the position; a hook or the system can put a path in both)}, and the scene." +
+      SAFER_SCENE_ID,
+    input: z.object({
+      sceneId,
+      frame: frameSchema.optional().describe(frameDescription),
+      tokens: z.array(updateTokenSchema).min(1)
+    })
+  }),
+  delete_tokens: defineTool({
+    ifOutcomeUnknown: CHECK_WITH_GET_SCENE,
+    description:
+      "Delete tokens by id; ids not on the scene are ignored. Foundry also removes each token from the combats it " +
+      "is in, and an unlinked token's own actor data (its hit points and other changes) is lost with it. Returns " +
+      "the count and the scene." +
+      SAFER_SCENE_ID,
+    input: z.object({ sceneId, ids: tokenIds.min(1).describe("Token ids to delete.") })
   })
 };
 

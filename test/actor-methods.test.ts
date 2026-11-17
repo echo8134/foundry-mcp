@@ -307,7 +307,34 @@ describe("get_schema", () => {
     const attack = await viaTool("get_schema", { document: "Activity", type: "attack" });
     assert.deepEqual(attack.fields, { type: 'string, default "attack"', attack: { bonus: "formula" } });
     const token = await viaTool("get_schema", { document: "Token" });
-    assert.deepEqual(token.fields, { disposition: "integer, one of -2|-1|0|1, default -1", level: "document id" });
+    const radius = "number, min 0, step 0.01, default 0";
+    assert.deepEqual(token.fields, {
+      _id: "document id, nullable, default null",
+      name: 'string, default ""',
+      actorId: "document id, nullable, default null",
+      actorLink: "boolean, default false",
+      delta: "object",
+      x: "integer, default 0",
+      y: "integer, default 0",
+      elevation: "number, default 0",
+      width: "number, positive, default 1",
+      height: "number, positive, default 1",
+      depth: "number, min 0, default 1",
+      shape: "integer, one of 0|1|2|3|4|5, default 4",
+      level: "document id",
+      sort: "integer, default 0",
+      rotation: "number, default 0",
+      hidden: "boolean, default false",
+      disposition: "integer, one of -2|-1|0|1, default -1",
+      texture: { src: 'file path, nullable, default "icons/svg/mystery-man.svg"' },
+      light: { dim: radius, bright: radius, color: "color, nullable, default null" },
+      detectionModes: {
+        $map: { enabled: "boolean, default true", range: "number, min 0, step 0.01, nullable, default null" }
+      },
+      flags: { $map: "object" },
+      _movementHistory: { $array: "object" },
+      _regions: { $array: "document id" }
+    });
   });
 
   it("picks a subtree by path, and answers not_found for a path that is not there", async () => {

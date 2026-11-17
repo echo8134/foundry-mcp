@@ -13,7 +13,8 @@ import {
 } from "./scene-data.mjs";
 import { drawLights, drawTokens, drawWalls } from "./scene-drawing.mjs";
 import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet } from "./scope.mjs";
-import { tokenFields } from "./token-data.mjs";
+import { storedTokenData, tokenFields } from "./token-data.mjs";
+import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
 import { folderRecords, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
 import { createWriteQueue } from "./write-queue.mjs";
@@ -25,7 +26,10 @@ export const QUEUE_BUDGET_MS = {
   delete_walls: 25_000,
   sync_walls: 25_000,
   sync_lights: 25_000,
-  ensure_scene: 85_000
+  ensure_scene: 85_000,
+  place_tokens: 25_000,
+  update_tokens: 25_000,
+  delete_tokens: 25_000
 };
 
 export const timing = { textureLoadMs: 30_000 };
@@ -59,8 +63,15 @@ function gridType(grid) {
   return grid.isSquare ? "square" : "hex";
 }
 
-async function getScene({ sceneId }) {
+async function getScene({ sceneId, tokens: tokenIds = [] }) {
   const scene = resolveScene(sceneId);
+  const missing = tokenIds.filter((id) => !scene.tokens.has(id));
+  if (missing.length > 0) {
+    throw new MethodError(
+      "not_found",
+      `The scene ${scene.name} has no token with the id ${missing.join(", ")}. The token ids are in this tool's tokens list.`
+    );
+  }
   const rect = sceneRect(scene);
   const frame = sceneFrame(rect);
   const { grid } = scene;
@@ -98,7 +109,8 @@ async function getScene({ sceneId }) {
       ...lightFields(light),
       managed: isManaged(light)
     })),
-    tokens: scene.tokens.map((token) => tokenFields(token, frame, rect))
+    tokens: scene.tokens.map((token) => tokenFields(token, frame, rect)),
+    tokenData: tokenIds.map((id) => storedTokenData(scene.tokens.get(id), frame, rect))
   };
 }
 
@@ -530,5 +542,8 @@ export const METHODS = Object.freeze({
   ensure_scene: serialised("ensure_scene", checkEnsureSceneInput, ensureScene),
   list_actors: listActors,
   get_actor: getActor,
-  get_schema: getSchema
+  get_schema: getSchema,
+  place_tokens: serialised("place_tokens", preparePlacement, placeTokens),
+  update_tokens: serialised("update_tokens", prepareUpdate, updateTokens),
+  delete_tokens: serialised("delete_tokens", onScene(), deleteTokens)
 });

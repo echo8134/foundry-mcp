@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { applyChanges, cleanValue, validationErrors } from "./fake-model.ts";
 import { systemConfig } from "./fake-system.ts";
 
 export class Collection<T> extends Map<string, T> {
@@ -104,7 +105,11 @@ export function fakeWorld(options: WorldOptions = {}) {
     wallCreates: 0,
     wallDeletes: 0,
     lightCreates: 0,
-    lightDeletes: 0
+    lightDeletes: 0,
+    tokenCreates: 0,
+    tokenUpdates: [] as any[][],
+    tokenMoves: [] as { instructions: Record<string, any>; options: any }[],
+    tokenDeletes: 0
   };
   const control = {
     thumbnailFails: options.thumbnailFails ?? false,
@@ -115,9 +120,20 @@ export function fakeWorld(options: WorldOptions = {}) {
     textureGate: null as Promise<void> | null,
     thumbnailGate: null as Promise<void> | null,
     vetoWall: null as null | ((data: Record<string, any>) => boolean),
-    vetoLight: null as null | ((data: Record<string, any>) => boolean)
+    vetoLight: null as null | ((data: Record<string, any>) => boolean),
+    vetoToken: null as null | ((data: Record<string, any>) => boolean),
+    /** Stands in for a preUpdateToken hook that changes or drops part of an update without an error. */
+    filterTokenChanges: null as null | ((changes: Record<string, any>) => void),
+    /** Stands in for a preCreateToken hook that changes the data of a token before it is stored. */
+    filterTokenData: null as null | ((data: Record<string, any>) => void),
+    /** The message of an error the create throws for a token, the way a failing hook or a lost connection ends it. */
+    tokenCreateError: null as null | ((data: Record<string, any>) => string | undefined),
+    tokenMoveError: null as string | null,
+    tokenUpdateError: null as string | null
   };
   const delay = () => pause(options.latency ?? 0);
+  const system = systemConfig();
+  const tokenFields = system.Token.documentClass.schema;
   let counter = 0;
 
   /** The wall's c is an array of integer NumberFields (common/documents/wall.mjs:54), and levels defaults to [] (SceneLevelsSetField). */
@@ -201,9 +217,13 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
   }
 
-  /** A world actor. `system` is stored; `prepared` stands in for what dnd5e derives from it and defaults to a copy. */
+  /**
+   * A world actor. `system` is stored; `prepared` stands in for what dnd5e derives from it and defaults to a copy.
+   * `tokenImages` are the files a wildcard token image of the prototype token matches.
+   */
   function makeActor(data: Record<string, any>) {
-    const { id = `actor${++counter}`, prepared, items = [], effects = [], ...rest } = data;
+    const { id = `actor${++counter}`, prepared, items = [], effects = [], tokenImages = [], ...rest } = data;
+    let lastWildcard: string | undefined;
     const source: Record<string, any> = {
       name: "",
       type: "npc",
@@ -249,6 +269,7 @@ export function fakeWorld(options: WorldOptions = {}) {
       pack: null,
       isToken: false,
       token: null,
+      prototypeToken: { toObject: () => structuredClone(source.prototypeToken) },
       get name() {
         return source.name;
       },
@@ -267,6 +288,30 @@ export function fakeWorld(options: WorldOptions = {}) {
       // Actor#getDependentTokens (client/documents/actor.mjs:597) answers every token whose base actor this is, linked or not.
       getDependentTokens() {
         return [...scenes.values()].flatMap((scene: any) => scene.tokens.filter((token: any) => token.actorId === id));
+      },
+      /**
+       * Actor#getTokenDocument (client/documents/actor.mjs:337): an unsaved token from the prototype token with the data
+       * merged over it, on the given parent scene or else the viewed one. An unlinked copy with appendNumber is named with
+       * the lowest number no token of this actor on that scene has. With randomImg and no image given, each call takes
+       * one of the wildcard images, and never the one the call before took when there are several. Invalid data throws,
+       * as the token constructor does.
+       */
+      async getTokenDocument(data: Record<string, any> = {}, tokenOptions: { parent?: any } = {}) {
+        const parent = tokenOptions.parent ?? globals.canvas.scene;
+        const { appendNumber, ...prototype } = structuredClone(source.prototypeToken);
+        const tokenData: Record<string, any> = { ...prototype, actorId: id };
+        if (tokenData.randomImg && !data.texture?.src) {
+          const fresh = tokenImages.filter((image: string) => image !== lastWildcard);
+          lastWildcard = (tokenImages.length > 1 ? fresh : tokenImages)[0];
+          tokenData.texture = { ...tokenData.texture, src: lastWildcard };
+        }
+        if (!tokenData.actorLink && appendNumber) {
+          const taken = new Set(parent.tokens.filter((token: any) => token.actorId === id).map((t: any) => t.name));
+          let number = 1;
+          while (taken.has(`${tokenData.name} (${number})`)) number++;
+          tokenData.name = `${tokenData.name} (${number})`;
+        }
+        return makeToken(merge(tokenData, structuredClone(data)), parent, null);
       }
     };
     source.items = [...actor.items.values()].map((item: any) => item._source);
@@ -292,41 +337,114 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
   }
 
-  /** The centre and pixel size of a token on a square grid, the only grid a test scene uses. */
-  function makeToken(data: Record<string, any>, scene: any) {
-    const { delta = {}, ...rest } = data;
+  /** What Foundry stores of the data a token is built from, or the error its token model throws on it. */
+  function tokenSource(data: Record<string, any>, scene: any) {
+    // BaseToken#_initializeSource puts a token without a level on the scene's initial one (common/documents/token.mjs:231-235).
+    const given = { level: scene.initialLevel.id, ...structuredClone(data) };
+    const source = cleanValue(tokenFields, given, { partial: false }) as Record<string, any>;
+    const errors = validationErrors(tokenFields, source);
+    if (errors.length > 0) throw new Error(`Token validation errors: ${errors.join("; ")}`);
+    return source;
+  }
+
+  /**
+   * A token on a square or gridless scene, the only grids a test scene uses. Its stored data is `_source`, and the
+   * document reads each stored field from it unless `prepared` holds another value for it, which stands in for what
+   * data preparation or a running animation puts in place of the stored one. `_id` is null for a token that is not
+   * stored yet.
+   */
+  function makeToken(data: Record<string, any>, scene: any, id: string | null) {
+    const source = tokenSource({ ...data, _id: id }, scene);
+    const prepared: Record<string, any> = {};
     let synthetic: any = null;
+    const sizeOf = (data: Record<string, any>) => ({
+      width: (data.width ?? token.width) * scene.grid.size,
+      height: (data.height ?? token.height) * scene.grid.size
+    });
     const token: any = {
-      id: `token${++counter}`,
-      name: "",
-      actorId: null,
-      actorLink: false,
-      x: 0,
-      y: 0,
-      width: 1,
-      height: 1,
-      elevation: 0,
-      level: "lvl1",
-      hidden: false,
-      disposition: -1,
-      rotation: 0,
-      flags: {},
-      ...rest,
+      _source: source,
       parent: scene,
+      prepared,
+      get id() {
+        return source._id;
+      },
       get actor() {
-        const base = actors.get(token.actorId);
+        const base = actors.get(source.actorId);
         if (!base) return null;
-        if (token.actorLink) return base;
-        synthetic ??= syntheticActor(base, token, delta);
+        if (source.actorLink) return base;
+        synthetic ??= syntheticActor(base, token, source.delta);
         return synthetic;
       },
-      getSize: () => ({ width: token.width * scene.grid.size, height: token.height * scene.grid.size }),
-      getCenterPoint: () => {
-        const { width, height } = token.getSize();
-        return { x: token.x + width / 2, y: token.y + height / 2, elevation: token.elevation };
+      toObject: () => structuredClone(source),
+      getSize: (data: Record<string, any> = {}) => sizeOf(data),
+      getCenterPoint: (data: Record<string, any> = {}) => {
+        const { width, height } = sizeOf(data);
+        return {
+          x: (data.x ?? token.x) + width / 2,
+          y: (data.y ?? token.y) + height / 2,
+          elevation: data.elevation ?? token.elevation
+        };
+      },
+      /**
+       * BaseToken#getSnappedPosition (common/documents/token.mjs:286): on a gridless scene the position as given; on a
+       * square grid the corner of a token whole cells wide and high goes to the nearest grid vertex, and the elevation
+       * is rounded to the grid distance.
+       */
+      getSnappedPosition: (data: Record<string, any> = {}) => {
+        const { grid } = scene;
+        const x = data.x ?? token.x;
+        const y = data.y ?? token.y;
+        const elevation = data.elevation ?? token.elevation;
+        if (grid.isGridless) return { x, y, elevation };
+        const whole = [data.width ?? token.width, data.height ?? token.height].every(Number.isInteger);
+        assert.ok(whole, "the fake snaps only tokens whole cells wide and high");
+        const toGrid = (value: number, step: number) => Math.round(value / step) * step;
+        return { x: toGrid(x, grid.size), y: toGrid(y, grid.size), elevation: toGrid(elevation, grid.distance) };
+      },
+      /**
+       * DataModel#validate with changes is a dry run of the update (common/abstract/data.mjs:575): it cleans the
+       * changes, the given object itself when clean.copy is false, and throws what the update would refuse.
+       */
+      validate: ({ changes, clean }: { changes: Record<string, any>; clean?: { copy?: boolean } }) => {
+        const target = clean?.copy === false ? changes : structuredClone(changes);
+        const cleaned = cleanValue(tokenFields, target, { partial: true, source }) as Record<string, any>;
+        const errors = validationErrors(tokenFields, applyChanges(structuredClone(source), cleaned));
+        if (errors.length > 0) throw new Error(`Token validation errors: ${errors.join("; ")}`);
+        return true;
       }
     };
+    for (const key of Object.keys(source)) {
+      if (!(key in token)) {
+        Object.defineProperty(token, key, { get: () => prepared[key] ?? source[key], enumerable: true });
+      }
+    }
     return token;
+  }
+
+  /**
+   * One token of an update: the changes are cleaned, pass the stand-in hook, and are merged into the stored data. Foundry
+   * skips a token whose data then fails validation and goes on with the rest (client/data/client-backend.mjs:246-259).
+   */
+  function changeToken(token: any, changes: Record<string, any>) {
+    const source = token._source;
+    const cleaned = cleanValue(tokenFields, structuredClone(changes), { partial: true, source }) as Record<string, any>;
+    control.filterTokenChanges?.(cleaned);
+    const next = applyChanges(structuredClone(source), cleaned);
+    const errors = validationErrors(tokenFields, next);
+    if (errors.length > 0) {
+      log.notifications.push(`Token update skipped: ${errors.join("; ")}`);
+      return;
+    }
+    for (const key of Object.keys(source)) delete source[key];
+    Object.assign(source, next);
+  }
+
+  /** Whether the point lies on the wall's segment. */
+  function onWall({ x, y }: { x: number; y: number }, [x1, y1, x2, y2]: number[]) {
+    const cross = (x - x1!) * (y2! - y1!) - (y - y1!) * (x2! - x1!);
+    const within =
+      Math.min(x1!, x2!) <= x && x <= Math.max(x1!, x2!) && Math.min(y1!, y2!) <= y && y <= Math.max(y1!, y2!);
+    return cross === 0 && within;
   }
 
   function makeScene(data: Record<string, any>) {
@@ -355,6 +473,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     const level = {
       id: "lvl1",
       name: "Level",
+      // LevelDocument#prepareBaseData (client/documents/level.mjs:62-66).
+      elevation: { base: 0 },
       _source: { background: { src: null } },
       get background() {
         return { ...this._source.background, color: "#999999" };
@@ -365,7 +485,37 @@ export function fakeWorld(options: WorldOptions = {}) {
     const tokens = new Collection<any>();
     const levels = new Collection<any>([["lvl1", level]]);
     for (const id of options.extraLevels ?? [])
-      levels.set(id, { id, name: id, _source: { background: { src: null } } });
+      levels.set(id, { id, name: id, elevation: { base: 0 }, _source: { background: { src: null } } });
+    /**
+     * As walls and lights: a token that fails validation or that a preCreate hook vetoes is skipped
+     * (client/data/client-backend.mjs:81-112). A token created without a sort goes one above the highest on the scene
+     * (client/documents/abstract/canvas-document.mjs:122-128).
+     */
+    const createTokens = async (data: Record<string, any>[]) => {
+      await delay();
+      const made = [];
+      for (const { _id, ...one } of data) {
+        const failure = control.tokenCreateError?.(one);
+        if (failure) throw new Error(failure);
+        control.filterTokenData?.(one);
+        let token: any;
+        try {
+          const sort = "sort" in one ? one.sort : Math.max(0, ...tokens.map((placed: any) => placed.sort + 1));
+          token = makeToken({ ...one, sort }, scene, `token${++counter}`);
+        } catch (error) {
+          log.notifications.push(`Token skipped: ${(error as Error).message}`);
+          continue;
+        }
+        if (control.vetoToken?.(one)) {
+          log.notifications.push("Token creation prevented");
+          continue;
+        }
+        made.push(token);
+      }
+      if (made.length > 0) log.tokenCreates++;
+      for (const token of made) tokens.set(token.id, token);
+      return made;
+    };
     const id = `scene${++counter}`;
     const scene: any = {
       id,
@@ -457,12 +607,64 @@ export function fakeWorld(options: WorldOptions = {}) {
         merge(source, changed);
       },
       async updateEmbeddedDocuments(name: string, updates: any[]) {
-        assert.equal(name, "Level");
+        assert.ok(name === "Level" || name === "Token", name);
         await delay();
+        if (name === "Token") {
+          log.tokenUpdates.push(structuredClone(updates));
+          if (control.tokenUpdateError) throw new Error(control.tokenUpdateError);
+          for (const { _id, ...changes } of updates) changeToken(tokens.get(_id), changes);
+          return updates.map(({ _id }) => tokens.get(_id));
+        }
         log.levelUpdates++;
         for (const { _id, ...changes } of updates) merge(level._source, changes);
       },
+      /**
+       * Scene#moveTokens (client/documents/scene.mjs:676) with a destination: the movement fields and the other data in
+       * one update. Measured on Foundry 14.370: a movement field of the wrong type throws before any token is written,
+       * and on the viewed scene a token whose centre would end on a wall stops one pixel short of it, with the result
+       * false, unless constrainOptions.ignoreWalls is set, and a token whose centre would be on the far edge of the
+       * canvas does not move. Read from the source: a level the scene lacks throws like a wrong type
+       * (client/documents/token.mjs:2272, :2307), and a token that does not move still gets its other data (:1819-1826).
+       */
+      async moveTokens(instructions: Record<string, any>, moveOptions: any) {
+        await delay();
+        log.tokenMoves.push({ instructions: structuredClone(instructions), options: moveOptions });
+        if (control.tokenMoveError) throw new Error(control.tokenMoveError);
+        const movementFields: readonly string[] = system.Token.documentClass.MOVEMENT_FIELDS;
+        const moves = Object.entries(instructions).map(([id, { destination, constrainOptions }]) => {
+          const token = tokens.get(id);
+          const { action: _action, ...changes } = destination;
+          for (const key of ["x", "y", "elevation", "width", "height", "depth"]) {
+            if (changes[key] !== undefined && typeof changes[key] !== "number")
+              throw new Error(`${key} must be a number`);
+          }
+          if (changes.shape !== undefined && !tokenFields.fields.shape.choices.includes(changes.shape))
+            throw new Error("shape is invalid");
+          if (!levels.has(changes.level ?? token._source.level)) throw new Error("level must exist");
+          return { token, changes, ignoreWalls: constrainOptions?.ignoreWalls === true };
+        });
+        const viewed = globals.canvas.scene === scene;
+        const results: Record<string, boolean> = {};
+        for (const { token, changes, ignoreWalls } of moves) {
+          results[token.id] = true;
+          if (viewed) {
+            const from = token._source;
+            const centre = token.getCenterPoint({ ...from, ...changes });
+            const { width, height } = scene.dimensions;
+            if (centre.x < 0 || centre.x >= width || centre.y < 0 || centre.y >= height) {
+              for (const key of movementFields) delete changes[key];
+              results[token.id] = false;
+            } else if (!ignoreWalls && walls.filter((wall: any) => onWall(centre, wall.c)).length > 0) {
+              changes.x = (changes.x ?? from.x) - Math.sign((changes.x ?? from.x) - from.x);
+              results[token.id] = false;
+            }
+          }
+          changeToken(token, changes);
+        }
+        return results;
+      },
       async createEmbeddedDocuments(name: string, data: any[]) {
+        if (name === "Token") return createTokens(data);
         assert.ok(name === "Wall" || name === "AmbientLight", name);
         await delay();
         // client/data/client-backend.mjs:81-112: a document that fails validation or that a preCreate hook vetoes is
@@ -493,8 +695,13 @@ export function fakeWorld(options: WorldOptions = {}) {
         return made;
       },
       async deleteEmbeddedDocuments(name: string, ids: string[]) {
-        assert.ok(name === "Wall" || name === "AmbientLight", name);
         await delay();
+        if (name === "Token") {
+          for (const id of ids) if (!tokens.has(id)) throw new Error(`Token ${id} does not exist`);
+          log.tokenDeletes++;
+          return ids.map((id) => tokens.get(id)).filter((token) => tokens.delete(token.id));
+        }
+        assert.ok(name === "Wall" || name === "AmbientLight", name);
         const isLight = name === "AmbientLight";
         const collection = isLight ? lights : walls;
         if (isLight ? control.lightDeleteFails : control.wallDeleteFails) throw new Error("connection lost");
@@ -566,13 +773,24 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   const globals = globalThis as Record<string, any>;
+  /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
+  class FakeToken {
+    static schema = tokenFields;
+    static MOVEMENT_FIELDS = system.Token.documentClass.MOVEMENT_FIELDS;
+    constructor(data: Record<string, any>, context: { parent: any }) {
+      // biome-ignore lint/correctness/noConstructorReturn: the fake token is a plain object that makeToken builds.
+      return makeToken(data, context.parent, null);
+    }
+  }
+
   const install = () => {
     globals.game = { scenes, folders, actors, documentTypes: DOCUMENT_TYPES };
     globals.canvas = { scene: null };
     globals.CONST = { FOLDER_MAX_DEPTH: 4 };
     globals.CONFIG = {
       Scene: { documentClass: FakeScene },
-      ...systemConfig(),
+      ...system,
+      Token: { documentClass: FakeToken },
       weatherEffects: Object.fromEntries((options.weather ?? ["rain", "fog"]).map((key) => [key, {}])),
       Canvas: {
         lightAnimations: Object.fromEntries(["flame", "torch", "pulse"].map((key) => [key, {}])),
@@ -580,7 +798,7 @@ export function fakeWorld(options: WorldOptions = {}) {
       }
     };
     globals.foundry = {
-      utils: { fromUuid },
+      utils: { fromUuid, mergeObject: merge },
       canvas: {
         loadTexture: async (src: string) => {
           await control.textureGate;
@@ -633,7 +851,7 @@ export function fakeWorld(options: WorldOptions = {}) {
     return actor;
   };
   const addToken = (scene: any, data: Record<string, any> = {}) => {
-    const token = makeToken(data, scene);
+    const token = makeToken(data, scene, `token${++counter}`);
     scene.tokens.set(token.id, token);
     return token;
   };

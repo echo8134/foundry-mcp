@@ -64,6 +64,7 @@ describe("main.ts", () => {
     const tools = messages.find((m) => m.id === 2)?.result?.tools as { name: string }[];
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "create_walls",
+      "delete_tokens",
       "delete_walls",
       "ensure_scene",
       "get_actor",
@@ -72,8 +73,10 @@ describe("main.ts", () => {
       "get_schema",
       "list_actors",
       "list_scenes",
+      "place_tokens",
       "sync_lights",
-      "sync_walls"
+      "sync_walls",
+      "update_tokens"
     ]);
     assert.match(err(), /foundry-mcp \| /);
 
