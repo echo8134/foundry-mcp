@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { WebSocket as NodeWebSocket } from "ws";
 import { Bridge } from "../module/scripts/bridge.mjs";
 import { Channel, fromBase64url } from "../module/scripts/channel.mjs";
+import { SURFACE } from "../module/scripts/surface.mjs";
 import { BridgeError, BridgeHub } from "../src/hub.ts";
 import { ORIGIN, TOKEN, until } from "./helpers.ts";
 import { encodeFrame, OPCODE_BINARY, OPCODE_TEXT, type RawFrame, SamePortRelay } from "./wire.ts";
@@ -11,6 +12,7 @@ import { encodeFrame, OPCODE_BINARY, OPCODE_TEXT, type RawFrame, SamePortRelay }
 const info = {
   foundry: "14.370",
   module: "0.2.0",
+  surface: SURFACE,
   world: { id: "world-id-7c1e", title: "Hidden Halls" },
   user: { id: "user-id-93ab", name: "Gamemaster Gertrud" }
 };

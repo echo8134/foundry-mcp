@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { isNonce, PROTOCOL } from "../module/scripts/channel.mjs";
+import { SURFACE } from "../module/scripts/surface.mjs";
 
 export const PROTOCOL_VERSION = PROTOCOL;
+export const SURFACE_NUMBER = SURFACE;
 
 export const METHODS = [
   "get_scene",
@@ -11,7 +13,10 @@ export const METHODS = [
   "sync_walls",
   "sync_lights",
   "list_scenes",
-  "ensure_scene"
+  "ensure_scene",
+  "list_actors",
+  "get_actor",
+  "get_schema"
 ] as const;
 export type Method = (typeof METHODS)[number];
 
@@ -32,6 +37,7 @@ const authSchema = z.object({
   type: z.literal("auth"),
   foundry: z.string(),
   module: z.string(),
+  surface: z.int().min(1).optional(),
   world: z.object({ id: z.string(), title: z.string() }),
   user: z.object({ id: z.string(), name: z.string() })
 });

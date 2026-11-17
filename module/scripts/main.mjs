@@ -1,6 +1,7 @@
 import { Bridge } from "./bridge.mjs";
 import { PROTOCOL } from "./channel.mjs";
 import { METHODS } from "./methods.mjs";
+import { SURFACE } from "./surface.mjs";
 
 const MODULE_ID = "foundry-mcp";
 const DEFAULT_PORT = 31800;
@@ -74,6 +75,7 @@ function createBridge() {
     getInfo: () => ({
       foundry: game.version,
       module: game.modules.get(MODULE_ID).version,
+      surface: SURFACE,
       world: { id: game.world.id, title: game.world.title },
       user: { id: game.user.id, name: game.user.name }
     }),

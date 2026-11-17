@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { WebSocket as NodeWebSocket } from "ws";
 import { Bridge, type Problem } from "../module/scripts/bridge.mjs";
 import { Channel, toBase64url } from "../module/scripts/channel.mjs";
-import { MethodError } from "../module/scripts/methods.mjs";
+import { MethodError } from "../module/scripts/errors.mjs";
+import { SURFACE } from "../module/scripts/surface.mjs";
 import { BridgeError, BridgeHub } from "../src/hub.ts";
 import { FakeWebSocket } from "./fake-websocket.ts";
 import { ORIGIN, TOKEN, until, WRONG_TOKEN } from "./helpers.ts";
@@ -37,6 +38,7 @@ afterEach(async () => {
 const bridgeInfo = () => ({
   foundry: "14.370",
   module: "0.2.0",
+  surface: SURFACE,
   world: { id: "w", title: "W" },
   user: { id: "u", name: "GM" }
 });

@@ -1,61 +1,25 @@
+import { getActor, getSchema, listActors } from "./actor-methods.mjs";
+import { MethodError } from "./errors.mjs";
+import { folderPath, folderScope, resolveFolderPath } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
-import { lightData, lightFields, lightMarkers } from "./light-data.mjs";
+import { lightData, lightFields } from "./light-data.mjs";
 import {
   canvasOverflow,
-  folderPath,
-  isUnder,
-  listFolderPaths,
   planSceneChanges,
-  resolveFolderPath,
   scenesNamed,
   touchesGeometry,
   touchesThumbnail,
   unknownSceneFields
 } from "./scene-data.mjs";
+import { drawLights, drawTokens, drawWalls } from "./scene-drawing.mjs";
 import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet } from "./scope.mjs";
+import { tokenFields } from "./token-data.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
+import { folderRecords, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
 import { createWriteQueue } from "./write-queue.mjs";
-
-export const ERROR_CODES = Object.freeze(
-  /** @type {const} */ (["unknown_method", "invalid_params", "not_found", "foundry_error"])
-);
-
-/** @typedef {(typeof ERROR_CODES)[number]} ErrorCode */
-
-export class MethodError extends Error {
-  /** @param {ErrorCode} code @param {string} message */
-  constructor(code, message) {
-    super(message);
-    this.name = "MethodError";
-    this.code = code;
-  }
-}
 
 const THUMBNAIL_PENDING = "thumbnailPending";
 const DEFAULT_MAX_SIZE = 1568;
-const WALL_COLOR = "#ff2d2d";
-const DOOR_COLOR = "#2d7bff";
-const LIGHT_COLOR = "#ffd400";
-const DARKNESS_COLOR = "#c04dff";
-
-function resolveScene(sceneId) {
-  const scene = sceneId ? game.scenes.get(sceneId) : (canvas.scene ?? game.scenes.active);
-  if (scene) return scene;
-  throw new MethodError(
-    "not_found",
-    sceneId ? `No scene with id ${sceneId}.` : "No scene is being viewed or active. Pass a sceneId."
-  );
-}
-
-function sceneRect(scene) {
-  const { sceneX: x, sceneY: y, sceneWidth: width, sceneHeight: height } = scene.dimensions;
-  return { x, y, width, height };
-}
-
-function sceneFrame(rect) {
-  return { width: rect.width, height: rect.height };
-}
-
 export const QUEUE_BUDGET_MS = {
   create_walls: 25_000,
   delete_walls: 25_000,
@@ -86,12 +50,6 @@ function loadBackground(src) {
   );
 }
 
-function sceneFolderRecords() {
-  return game.folders
-    .filter((folder) => folder.type === "Scene")
-    .map((folder) => ({ id: folder.id, name: folder.name, parentId: folder.folder?.id ?? null }));
-}
-
 function scenePath(scene, folders) {
   return folderPath(folders, scene.folder?.id ?? null) ?? [];
 }
@@ -110,7 +68,7 @@ async function getScene({ sceneId }) {
     id: scene.id,
     name: scene.name,
     navName: scene.navName ?? "",
-    folder: scenePath(scene, sceneFolderRecords()),
+    folder: scenePath(scene, folderRecords("Scene")),
     active: scene.active,
     viewed: canvas.scene?.id === scene.id,
     frame,
@@ -139,7 +97,8 @@ async function getScene({ sceneId }) {
       levels: [...light.levels],
       ...lightFields(light),
       managed: isManaged(light)
-    }))
+    })),
+    tokens: scene.tokens.map((token) => tokenFields(token, frame, rect))
   };
 }
 
@@ -152,57 +111,13 @@ function loadImage(src) {
   });
 }
 
-function drawWalls(context, scene, rect, width, height) {
-  const sx = width / rect.width;
-  const sy = height / rect.height;
-  const lineWidth = Math.max(2, Math.round(Math.max(width, height) / 400));
-  context.lineCap = "round";
-  for (const wall of scene.walls) {
-    const [x1, y1, x2, y2] = wall.c;
-    context.beginPath();
-    context.moveTo((x1 - rect.x) * sx, (y1 - rect.y) * sy);
-    context.lineTo((x2 - rect.x) * sx, (y2 - rect.y) * sy);
-    context.strokeStyle = "#000000";
-    context.lineWidth = lineWidth + 2;
-    context.stroke();
-    context.strokeStyle = wall.door > 0 ? DOOR_COLOR : WALL_COLOR;
-    context.lineWidth = lineWidth;
-    context.stroke();
-  }
-}
-
-function drawLights(context, scene, rect, width, height) {
-  const lineWidth = Math.max(2, Math.round(Math.max(width, height) / 400));
-  const circle = (x, y, radius) => {
-    context.beginPath();
-    context.arc(x, y, radius, 0, 2 * Math.PI);
-  };
-  for (const { x, y, radius, negative } of lightMarkers([...scene.lights.values()], rect, scene.grid, {
-    width,
-    height
-  })) {
-    const color = negative ? DARKNESS_COLOR : LIGHT_COLOR;
-    if (radius > 0) {
-      for (const [stroke, strokeWidth] of [
-        ["#000000", lineWidth + 2],
-        [color, lineWidth]
-      ]) {
-        context.strokeStyle = stroke;
-        context.lineWidth = strokeWidth;
-        circle(x, y, radius);
-        context.stroke();
-      }
-    }
-    circle(x, y, lineWidth * 2 + 2);
-    context.fillStyle = color;
-    context.strokeStyle = "#000000";
-    context.lineWidth = 2;
-    context.fill();
-    context.stroke();
-  }
-}
-
-async function getSceneImage({ sceneId, maxSize = DEFAULT_MAX_SIZE, showWalls = false, showLights = false }) {
+async function getSceneImage({
+  sceneId,
+  maxSize = DEFAULT_MAX_SIZE,
+  showWalls = false,
+  showLights = false,
+  showTokens = false
+}) {
   const scene = resolveScene(sceneId);
   const rect = sceneRect(scene);
   const scale = Math.min(1, maxSize / Math.max(rect.width, rect.height));
@@ -231,6 +146,7 @@ async function getSceneImage({ sceneId, maxSize = DEFAULT_MAX_SIZE, showWalls = 
   context.drawImage(await loadImage(thumb), 0, 0, width, height);
   if (showWalls) drawWalls(context, scene, rect, width, height);
   if (showLights) drawLights(context, scene, rect, width, height);
+  if (showTokens) drawTokens(context, scene, rect, width, height);
 
   const dataUrl = surface.toDataURL("image/webp", 0.9);
   const [, mimeType, data] = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl) ?? [];
@@ -393,16 +309,12 @@ async function deleteWalls({ scene, request: { ids, all } }) {
 }
 
 async function listScenes({ folder }) {
-  const folders = sceneFolderRecords();
-  const all = listFolderPaths(folders);
-  const narrowed = folder !== undefined && folder.length > 0 ? folder : null;
-  if (narrowed && !all.some((entry) => entry.path.length === narrowed.length && isUnder(entry.path, narrowed))) {
-    throw new MethodError("not_found", `No scene folder at path ${JSON.stringify(narrowed)}.`);
-  }
-  const inScope = (path) => !narrowed || isUnder(path, narrowed);
+  const folders = folderRecords("Scene");
+  const scope = folderScope(folders, folder);
+  if (!scope) throw new MethodError("not_found", `No scene folder at path ${JSON.stringify(folder)}.`);
   const scenes = game.scenes
     .map((scene) => ({ scene, path: scenePath(scene, folders) }))
-    .filter(({ path }) => inScope(path))
+    .filter(({ path }) => scope.inScope(path))
     .map(({ scene, path }) => {
       const { grid } = scene;
       return {
@@ -419,10 +331,11 @@ async function listScenes({ folder }) {
         grid: { type: gridType(grid), size: grid.size, distance: grid.distance, units: grid.units },
         background: { src: scene.initialLevel?.background?.src ?? null },
         walls: { total: scene.walls.size, managed: scene.walls.filter(isManaged).length },
-        lights: { total: scene.lights.size, managed: scene.lights.filter(isManaged).length }
+        lights: { total: scene.lights.size, managed: scene.lights.filter(isManaged).length },
+        tokens: { total: scene.tokens.size, managed: scene.tokens.filter(isManaged).length }
       };
     });
-  return { folders: all.filter((entry) => inScope(entry.path)), scenes };
+  return { folders: scope.folders, scenes };
 }
 
 function findSceneToEnsure({ sceneId, name, folder = [] }, lookupFolderId) {
@@ -535,7 +448,7 @@ async function refreshThumbnail(scene) {
 }
 
 async function ensureScene(input) {
-  const folders = sceneFolderRecords();
+  const folders = folderRecords("Scene");
   const wanted = input.folder ?? [];
   const resolved = resolveFolderPath(folders, wanted);
   if (resolved.ambiguous) {
@@ -587,7 +500,7 @@ async function ensureScene(input) {
   return {
     id: scene.id,
     name: scene.name,
-    folder: scenePath(scene, sceneFolderRecords()),
+    folder: scenePath(scene, folderRecords("Scene")),
     created: !existing,
     changed: plan.changed.filter((key) => !unapplied.includes(key)),
     unapplied
@@ -614,5 +527,8 @@ export const METHODS = Object.freeze({
   sync_walls: serialised("sync_walls", onScene(checkWallRequest), syncWalls),
   sync_lights: serialised("sync_lights", onScene(checkLightRequest), syncLights),
   list_scenes: listScenes,
-  ensure_scene: serialised("ensure_scene", checkEnsureSceneInput, ensureScene)
+  ensure_scene: serialised("ensure_scene", checkEnsureSceneInput, ensureScene),
+  list_actors: listActors,
+  get_actor: getActor,
+  get_schema: getSchema
 });

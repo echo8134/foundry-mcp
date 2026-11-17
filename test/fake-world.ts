@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { systemConfig } from "./fake-system.ts";
 
 export class Collection<T> extends Map<string, T> {
   filter(fn: (value: T) => boolean) {
@@ -73,6 +74,12 @@ const cleanInteger = (value: number) => {
   return rounded;
 };
 
+const DOCUMENT_TYPES = Object.freeze({
+  Actor: ["base", "character", "npc", "vehicle", "group"],
+  Item: ["base", "weapon", "feat", "spell"],
+  ActiveEffect: ["base", "enchantment"]
+});
+
 type WorldOptions = {
   weather?: string[];
   unloadable?: string[];
@@ -84,6 +91,8 @@ type WorldOptions = {
 export function fakeWorld(options: WorldOptions = {}) {
   const folders = new Collection<any>();
   const scenes = new Collection<any>();
+  const actors = new Collection<any>();
+  const packs = new Map<string, Collection<any>>();
   const log = {
     sceneCreates: 0,
     sceneUpdates: 0,
@@ -192,6 +201,134 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
   }
 
+  /** A world actor. `system` is stored; `prepared` stands in for what dnd5e derives from it and defaults to a copy. */
+  function makeActor(data: Record<string, any>) {
+    const { id = `actor${++counter}`, prepared, items = [], effects = [], ...rest } = data;
+    const source: Record<string, any> = {
+      name: "",
+      type: "npc",
+      img: "icons/svg/mystery-man.svg",
+      folder: null,
+      system: {},
+      prototypeToken: { name: rest.name ?? "", actorLink: false },
+      ownership: { default: 0 },
+      flags: {},
+      ...structuredClone(rest)
+    };
+    const makeItem = (item: Record<string, any>) => {
+      const itemSource: Record<string, any> = {
+        _id: `item${++counter}`,
+        system: {},
+        effects: [],
+        flags: {},
+        ...structuredClone(item)
+      };
+      return {
+        id: itemSource._id,
+        uuid: `Actor.${id}.Item.${itemSource._id}`,
+        documentName: "Item",
+        name: itemSource.name,
+        type: itemSource.type,
+        flags: itemSource.flags,
+        _source: itemSource
+      };
+    };
+    const actor: any = {
+      id,
+      uuid: `Actor.${id}`,
+      documentName: "Actor",
+      _source: source,
+      system: structuredClone(prepared ?? source.system),
+      items: new Collection<any>(items.map(makeItem).map((item: any) => [item.id, item])),
+      effects: new Collection<any>(
+        effects.map((effect: Record<string, any>) => {
+          const one = { id: `effect${++counter}`, disabled: false, ...effect };
+          return [one.id, one];
+        })
+      ),
+      pack: null,
+      isToken: false,
+      token: null,
+      get name() {
+        return source.name;
+      },
+      get type() {
+        return source.type;
+      },
+      get img() {
+        return source.img;
+      },
+      get flags() {
+        return source.flags;
+      },
+      get folder() {
+        return source.folder ? folders.get(source.folder) : null;
+      },
+      // Actor#getDependentTokens (client/documents/actor.mjs:597) answers every token whose base actor this is, linked or not.
+      getDependentTokens() {
+        return [...scenes.values()].flatMap((scene: any) => scene.tokens.filter((token: any) => token.actorId === id));
+      }
+    };
+    source.items = [...actor.items.values()].map((item: any) => item._source);
+    return actor;
+  }
+
+  /** An unlinked token's actor: the base actor with the token's delta merged over it (common/documents/actor-delta.mjs:92). */
+  function syntheticActor(base: any, token: any, delta: Record<string, any>) {
+    const source = merge(structuredClone(base._source), structuredClone(delta));
+    return {
+      ...base,
+      uuid: `${token.parent.uuid}.Token.${token.id}.Actor.${base.id}`,
+      _source: source,
+      system: merge(structuredClone(base.system), structuredClone(delta.system ?? {})),
+      name: source.name,
+      type: source.type,
+      img: source.img,
+      flags: source.flags,
+      folder: null,
+      isToken: true,
+      token,
+      getDependentTokens: () => [token]
+    };
+  }
+
+  /** The centre and pixel size of a token on a square grid, the only grid a test scene uses. */
+  function makeToken(data: Record<string, any>, scene: any) {
+    const { delta = {}, ...rest } = data;
+    let synthetic: any = null;
+    const token: any = {
+      id: `token${++counter}`,
+      name: "",
+      actorId: null,
+      actorLink: false,
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      elevation: 0,
+      level: "lvl1",
+      hidden: false,
+      disposition: -1,
+      rotation: 0,
+      flags: {},
+      ...rest,
+      parent: scene,
+      get actor() {
+        const base = actors.get(token.actorId);
+        if (!base) return null;
+        if (token.actorLink) return base;
+        synthetic ??= syntheticActor(base, token, delta);
+        return synthetic;
+      },
+      getSize: () => ({ width: token.width * scene.grid.size, height: token.height * scene.grid.size }),
+      getCenterPoint: () => {
+        const { width, height } = token.getSize();
+        return { x: token.x + width / 2, y: token.y + height / 2, elevation: token.elevation };
+      }
+    };
+    return token;
+  }
+
   function makeScene(data: Record<string, any>) {
     const source = merge(
       {
@@ -225,16 +362,20 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
     const walls = new Collection<any>();
     const lights = new Collection<any>();
+    const tokens = new Collection<any>();
     const levels = new Collection<any>([["lvl1", level]]);
     for (const id of options.extraLevels ?? [])
       levels.set(id, { id, name: id, _source: { background: { src: null } } });
+    const id = `scene${++counter}`;
     const scene: any = {
-      id: `scene${++counter}`,
+      id,
+      uuid: `Scene.${id}`,
       _source: source,
       initialLevel: level,
       levels,
       walls,
       lights,
+      tokens,
       get dimensions() {
         return dimensionsOf(source);
       },
@@ -400,13 +541,38 @@ export function fakeWorld(options: WorldOptions = {}) {
     }
   }
 
+  /**
+   * The UUID forms get_actor takes, resolved as foundry.utils.fromUuid does for them (client/utils/helpers.mjs:172): null
+   * when nothing is there. A UUID of the form "Broken.<reason>" throws, as Foundry's parsing can on input it does not expect.
+   */
+  async function fromUuid(uuid: string) {
+    const parts = uuid.split(".");
+    if (parts[0] === "Broken") throw new TypeError(parts[1]);
+    if (parts[0] === "Compendium") {
+      const [, scope, name, type, id] = parts;
+      return type === "Actor" ? (packs.get(`${scope}.${name}`)?.get(id!) ?? null) : null;
+    }
+    if (parts[0] === "Actor") {
+      const actor = actors.get(parts[1]!);
+      if (parts[2] === "Item") return actor?.items.get(parts[3]) ?? null;
+      return actor ?? null;
+    }
+    if (parts[0] === "Scene") {
+      const token = scenes.get(parts[1]!)?.tokens.get(parts[3]);
+      if (parts[4] === "Actor") return token?.actor?.id === parts[5] ? token.actor : null;
+      return token ? { ...token, documentName: "Token" } : null;
+    }
+    return null;
+  }
+
   const globals = globalThis as Record<string, any>;
   const install = () => {
-    globals.game = { scenes, folders };
+    globals.game = { scenes, folders, actors, documentTypes: DOCUMENT_TYPES };
     globals.canvas = { scene: null };
     globals.CONST = { FOLDER_MAX_DEPTH: 4 };
     globals.CONFIG = {
       Scene: { documentClass: FakeScene },
+      ...systemConfig(),
       weatherEffects: Object.fromEntries((options.weather ?? ["rain", "fog"]).map((key) => [key, {}])),
       Canvas: {
         lightAnimations: Object.fromEntries(["flame", "torch", "pulse"].map((key) => [key, {}])),
@@ -414,6 +580,7 @@ export function fakeWorld(options: WorldOptions = {}) {
       }
     };
     globals.foundry = {
+      utils: { fromUuid },
       canvas: {
         loadTexture: async (src: string) => {
           await control.textureGate;
@@ -452,10 +619,42 @@ export function fakeWorld(options: WorldOptions = {}) {
     scene.walls.set(wall.id, wall);
     return wall;
   };
+  const addActor = (data: Record<string, any> = {}) => {
+    const actor = makeActor(data);
+    actors.set(actor.id, actor);
+    return actor;
+  };
+  /** An actor in a compendium pack: not a world actor, with no folder path and no placed tokens. */
+  const addPackActor = (pack: string, data: Record<string, any> = {}) => {
+    const actor = makeActor(data);
+    Object.assign(actor, { pack, uuid: `Compendium.${pack}.Actor.${actor.id}` });
+    if (!packs.has(pack)) packs.set(pack, new Collection<any>());
+    packs.get(pack)!.set(actor.id, actor);
+    return actor;
+  };
+  const addToken = (scene: any, data: Record<string, any> = {}) => {
+    const token = makeToken(data, scene);
+    scene.tokens.set(token.id, token);
+    return token;
+  };
   const addLight = (scene: any, data: Record<string, any> = {}) => {
     const light = makeLight({ x: 100, y: 100, config: { dim: 10 }, ...data }, scene);
     scene.lights.set(light.id, light);
     return light;
   };
-  return { install, addFolder, addScene, addWall, addLight, scenes, folders, log, control };
+  return {
+    install,
+    addFolder,
+    addScene,
+    addWall,
+    addLight,
+    addActor,
+    addPackActor,
+    addToken,
+    scenes,
+    folders,
+    actors,
+    log,
+    control
+  };
 }

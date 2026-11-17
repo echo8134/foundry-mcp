@@ -1,5 +1,5 @@
 import { Channel, fromBase64url, isNonce, newNonce, PROTOCOL } from "./channel.mjs";
-import { MethodError } from "./methods.mjs";
+import { MethodError } from "./errors.mjs";
 
 const MIN_DELAY_MS = 1000;
 const MAX_DELAY_MS = 15000;

@@ -12,11 +12,12 @@ import {
   parseInbound,
   READY,
   type Request,
-  type Response
+  type Response,
+  SURFACE_NUMBER
 } from "./protocol.ts";
 import type { Token } from "./token.ts";
 
-type BridgeErrorCode = "no_bridge" | "port_unavailable" | "timeout" | "bridge_closed" | ErrorCode;
+type BridgeErrorCode = "no_bridge" | "outdated_module" | "port_unavailable" | "timeout" | "bridge_closed" | ErrorCode;
 
 export class BridgeError extends Error {
   readonly code: BridgeErrorCode;
@@ -84,6 +85,11 @@ const mismatchAdvice = (protocol: number) =>
     : "This MCP server still runs older code than that tab's module, so the user has to restart this MCP server " +
       "to run the current code (in Claude Code: /mcp, then reconnect the server). ") +
   "Retrying alone does not help.";
+
+const outdatedModuleMessage = (surface: number) =>
+  `The Foundry tab still runs an older foundry-mcp module than this server (its method surface is ${surface}, this ` +
+  `server's is ${SURFACE_NUMBER}), so it lacks methods or fields this server offers. The user has to reload Foundry (F5) ` +
+  "to load the current module. Nothing was sent to Foundry. Retrying alone does not help.";
 
 const NOT_PROVEN = "the bridge did not prove it knows the token";
 
@@ -178,6 +184,8 @@ export class BridgeHub {
     if (this.listener.kind === "unavailable") throw new BridgeError("port_unavailable", this.listener.message);
     const bridge = this.bridge;
     if (bridge.kind !== "ready") throw new BridgeError("no_bridge", this.noBridgeMessage());
+    const surface = bridge.info.surface ?? 1;
+    if (surface < SURFACE_NUMBER) throw new BridgeError("outdated_module", outdatedModuleMessage(surface));
     const id = randomUUID();
     const frame: Request = { type: "request", id, method, params };
     return new Promise((resolve, reject) => {

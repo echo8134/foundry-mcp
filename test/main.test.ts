@@ -66,8 +66,11 @@ describe("main.ts", () => {
       "create_walls",
       "delete_walls",
       "ensure_scene",
+      "get_actor",
       "get_scene",
       "get_scene_image",
+      "get_schema",
+      "list_actors",
       "list_scenes",
       "sync_lights",
       "sync_walls"

@@ -1,6 +1,6 @@
 import { WebSocket } from "ws";
 import { Channel, fromBase64url, newNonce } from "../module/scripts/channel.mjs";
-import { type BridgeInfo, type Challenge, PROTOCOL_VERSION, type Request } from "../src/protocol.ts";
+import { type BridgeInfo, type Challenge, PROTOCOL_VERSION, type Request, SURFACE_NUMBER } from "../src/protocol.ts";
 import { parseToken } from "../src/token.ts";
 
 export const ORIGIN = "http://localhost:30000";
@@ -11,6 +11,7 @@ export const WRONG_TOKEN = parseToken("wrong-token-0123456789abcdefghijklmnopqrs
 export const info: BridgeInfo = {
   foundry: "14.370",
   module: "0.2.0",
+  surface: SURFACE_NUMBER,
   world: { id: "test-world", title: "Test World" },
   user: { id: "u1", name: "Gamemaster" }
 };
@@ -80,7 +81,7 @@ export class FakeBridge {
     this.sendText({ type: "hello", protocol: PROTOCOL_VERSION, nonce: this.clientNonce });
   }
 
-  async sendAuth(token: string = TOKEN): Promise<void> {
+  async sendAuth(token: string = TOKEN, sent: object = info): Promise<void> {
     await until(() => this.challenge !== undefined || this.closed !== null);
     const challenge = this.challenge;
     if (!challenge) throw new Error(`closed before a challenge arrived: ${JSON.stringify(this.closed)}`);
@@ -92,12 +93,12 @@ export class FakeBridge {
       transmit: (sealed) => this.sendRaw(sealed)
     });
     this.proofOpened = (await this.channel.receive(fromBase64url(challenge.proof)!)).ok;
-    await this.channel.send({ type: "auth", ...info });
+    await this.channel.send({ type: "auth", ...sent });
   }
 
-  async handshake(token: string = TOKEN): Promise<void> {
+  async handshake(token: string = TOKEN, sent: object = info): Promise<void> {
     this.sendHello();
-    await this.sendAuth(token);
+    await this.sendAuth(token, sent);
   }
 
   respond(id: string, result: unknown): Promise<void> {

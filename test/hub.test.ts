@@ -11,7 +11,7 @@ import {
   CLOSE_HANDSHAKE_TIMEOUT,
   CLOSE_PROTOCOL_ERROR
 } from "../src/hub.ts";
-import type { Challenge } from "../src/protocol.ts";
+import { type Challenge, SURFACE_NUMBER } from "../src/protocol.ts";
 import { FakeBridge, info, ORIGIN, TOKEN, until, WRONG_TOKEN } from "./helpers.ts";
 import { encodeFrame, OPCODE_BINARY, OPCODE_TEXT, parseStream, rawWebSocket } from "./wire.ts";
 
@@ -443,6 +443,38 @@ describe("BridgeHub", () => {
       assert.doesNotMatch(error.message, /npm run/, "a model with a shell would print the token into its transcript");
       return true;
     });
+  });
+
+  for (const [what, sent] of [
+    ["names no method surface", { ...info, surface: undefined }],
+    ["names a lower method surface than the server's", { ...info, surface: SURFACE_NUMBER - 1 }]
+  ] as const) {
+    it(`sends nothing to a module that ${what}, and says the user has to reload Foundry`, async () => {
+      const hub = await startHub();
+      const bridge = await connect(hub);
+      await bridge.handshake(TOKEN, sent);
+      await until(() => hub.bridgeInfo !== null);
+      await assert.rejects(hub.request("get_scene", {}), (error: unknown) => {
+        assert.ok(error instanceof BridgeError);
+        assert.equal(error.code, "outdated_module");
+        assert.match(error.message, /older foundry-mcp module/);
+        assert.match(error.message, /reload Foundry \(F5\)/);
+        return true;
+      });
+      await settle();
+      assert.equal(bridge.requests.length, 0);
+    });
+  }
+
+  it("works with a module that names a higher method surface than the server's", async () => {
+    const hub = await startHub();
+    const bridge = await connect(hub);
+    await bridge.handshake(TOKEN, { ...info, surface: SURFACE_NUMBER + 1 });
+    await until(() => hub.bridgeInfo !== null);
+    const pending = hub.request("get_scene", {});
+    await until(() => bridge.requests.length === 1);
+    await bridge.respond(bridge.requests[0]!.id, "newer");
+    assert.equal(await pending, "newer");
   });
 
   it("correlates two requests answered out of order", async () => {

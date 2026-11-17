@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { METHODS, MethodError, QUEUE_BUDGET_MS, timing } from "../module/scripts/methods.mjs";
+import { MethodError } from "../module/scripts/errors.mjs";
+import { METHODS, QUEUE_BUDGET_MS, timing } from "../module/scripts/methods.mjs";
 import { TOOLS } from "../src/tools.ts";
 import { fakeWorld } from "./fake-world.ts";
 
@@ -309,7 +310,7 @@ describe("walls made by the bridge", () => {
 });
 
 describe("list_scenes", () => {
-  it("lists scene folders and scenes with their folder path, grid, background, wall and light counts", async () => {
+  it("lists scene folders and scenes with their folder path, grid, background, wall, light and token counts", async () => {
     const world = fakeWorld();
     const chapter = world.addFolder("Chapter 5");
     const holoth = world.addFolder("Holoth", chapter);
@@ -327,6 +328,9 @@ describe("list_scenes", () => {
     world.addWall(gates, { flags: { "foundry-mcp": { managed: true } } });
     world.addLight(gates);
     world.addLight(gates, { flags: { "foundry-mcp": { managed: true } } });
+    world.addToken(gates);
+    world.addToken(gates);
+    world.addToken(gates, { flags: { "foundry-mcp": { managed: true } } });
     world.addScene({ name: "Hub", grid: { type: 0 } });
     world.install();
 
@@ -350,7 +354,8 @@ describe("list_scenes", () => {
       grid: { type: "square", size: 100, distance: 5, units: "ft" },
       background: { src: "maps/gates.webp" },
       walls: { total: 2, managed: 1 },
-      lights: { total: 2, managed: 1 }
+      lights: { total: 2, managed: 1 },
+      tokens: { total: 3, managed: 1 }
     });
     assert.deepEqual([byName.Hub.folder, byName.Hub.grid.type, byName.Hub.background], [[], "gridless", { src: null }]);
   });

@@ -28,15 +28,18 @@ async function connect(answer: (call: Call) => unknown | Promise<unknown>) {
 const text = (result: unknown) => (result as { content: { text: string }[] }).content[0]!.text;
 
 describe("MCP tools", () => {
-  it("lists exactly the eight tools with model-facing descriptions", async () => {
+  it("lists exactly the eleven tools with model-facing descriptions", async () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "create_walls",
       "delete_walls",
       "ensure_scene",
+      "get_actor",
       "get_scene",
       "get_scene_image",
+      "get_schema",
+      "list_actors",
       "list_scenes",
       "sync_lights",
       "sync_walls"

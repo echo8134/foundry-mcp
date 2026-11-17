@@ -209,7 +209,7 @@ const SPECS: Record<Method, ToolSpec> = {
   get_scene: defineTool({
     description:
       'Read a Foundry scene: id, name, navName ("" when none), folder (path of folder names from the root), active, viewed, shiftX and shiftY (the map shift, see ensure_scene), grid, ' +
-      "background image path, levels, every wall and every ambient light. The returned `frame` " +
+      "background image path, levels, every wall, every ambient light and every token. The returned `frame` " +
       "is the scene size in pixels. Wall coordinates `c` ([x1, y1, x2, y2]) are in that frame (scene pixels). To " +
       "compare them with an image from get_scene_image, multiply by imageFrame / sceneFrame, because the image " +
       "is usually smaller than the scene. Wall `kind` is one of wall, door, secret-door, window, terrain, " +
@@ -218,7 +218,11 @@ const SPECS: Record<Method, ToolSpec> = {
       "other fields as sync_lights takes them (bright and dim in grid distance units); fields Foundry holds as " +
       "none, such as the colour of a white light, are left out. `levels` is the level ids the wall or light belongs " +
       "to ([] is all levels). `managed` is true for walls and lights made by this bridge (create_walls, sync_walls, " +
-      "sync_lights) and false for those placed by hand.",
+      "sync_lights) and false for those placed by hand. Tokens are `{id, name, actorId, actorLink, at, width, height, " +
+      "elevation, level, hidden, disposition, rotation, managed, hp}`: `at` is the centre in the same frame, width and " +
+      "height in grid cells (dnd5e resets them from the actor's size unless the token has flags.dnd5e.lockSize), " +
+      "elevation in grid distance units, level the one level id the token is on, disposition -2 secret, -1 hostile, " +
+      "0 neutral, 1 friendly, and hp {value, max} of the token's own actor when it has hit points.",
     input: z.object({ sceneId })
   }),
   get_scene_image: defineTool({
@@ -229,12 +233,14 @@ const SPECS: Record<Method, ToolSpec> = {
       "give coordinates exactly as measured in this image, with the origin at the top left. Set showWalls to " +
       "draw the existing walls over the image (walls in red, doors in blue) to check your work. Set showLights to " +
       "draw every ambient light, hand-placed and bridge-made: a dot at its position and a ring at its reach " +
-      "(yellow, or purple for a darkness source).",
+      "(yellow, or purple for a darkness source). Set showTokens to draw every token as an ellipse over its footprint, " +
+      "outlined by disposition (green friendly, white neutral, orange hostile, cyan secret) and left unfilled when hidden.",
     input: z.object({
       sceneId,
       maxSize: z.number().int().min(64).max(4096).optional().describe("Longest image side in pixels. Default 1568."),
       showWalls: z.boolean().optional().describe("Draw the scene's walls over the image. Default false."),
-      showLights: z.boolean().optional().describe("Draw the scene's ambient lights over the image. Default false.")
+      showLights: z.boolean().optional().describe("Draw the scene's ambient lights over the image. Default false."),
+      showTokens: z.boolean().optional().describe("Draw the scene's tokens over the image. Default false.")
     }),
     timeoutMs: 90_000,
     toResult: (raw) => {
@@ -351,7 +357,7 @@ const SPECS: Record<Method, ToolSpec> = {
     description:
       "List the scenes of the world and the scene folders, without loading any of them. Each scene has id, name, " +
       "navName, folder (path of folder names from the root, [] at the root), active, viewed, width and height " +
-      "(of the map, without padding), shiftX and shiftY, grid, background image path and wall and light counts (each with total, " +
+      "(of the map, without padding), shiftX and shiftY, grid, background image path and wall, light and token counts (each with total, " +
       "and managed: the bridge-made ones). Pass folder (a path of folder names) to list only that folder and everything under it; " +
       "[] or no folder lists everything. " +
       "Use it to find a scene id for ensure_scene or the wall tools.",
@@ -450,6 +456,48 @@ const SPECS: Record<Method, ToolSpec> = {
       .refine((args) => args.sceneId !== undefined || args.name !== undefined, {
         message: "Give a name, or a sceneId to update."
       })
+  }),
+  list_actors: defineTool({
+    description:
+      "List the world's actors and actor folders. Each actor is {id, name, type, folder (path of folder names), " +
+      "managed}, plus cr for an npc and level for a character. Narrow by folder (that folder and everything under " +
+      "it), type (an actor type of the system, such as character or npc) or name (part of the name, any case). " +
+      "Sorted by folder, then name. At most 200 actors come back: total says how many matched, truncated whether " +
+      "the list was cut. get_actor reads one in full.",
+    input: z.object({
+      folder: folderPath.optional().describe('Folder path from the root, for example ["Monsters", "Drow"].'),
+      type: nonBlank.optional().describe("Actor type, for example npc."),
+      name: nonBlank.optional().describe("Part of the name, any case.")
+    })
+  }),
+  get_actor: defineTool({
+    description:
+      "Read one actor. system, prototypeToken, ownership and itemData are stored data, with the field names and " +
+      "codes dnd5e stores (get_schema lists them), so a value can be changed and passed back. derived holds the numbers " +
+      "the sheet shows, most of them computed by dnd5e and not stored: ac, hp, prof, xp, level, init, spell {dc, attack}, abilities {mod, save} and skills " +
+      "{total, passive}, whatever the actor type has. items and effects are short lists; pass item ids as items to get " +
+      "their full stored data in itemData. tokens are the placed tokens of the actor. actor is a world actor id or a " +
+      "UUID: Actor.<id>, Compendium.<pack>.Actor.<id>, or Scene.<id>.Token.<id>.Actor.<id>, the actor of an unlinked " +
+      "token, whose data is the base actor merged with that token's own changes.",
+    input: z.object({
+      actor: nonBlank.describe("World actor id, or an actor UUID."),
+      items: z.array(z.string().min(1)).optional().describe("Ids of the actor's items to return in full.")
+    })
+  }),
+  get_schema: defineTool({
+    description:
+      "The stored field names of the installed dnd5e, read from its data models. Without type it lists the types of " +
+      "the document (Token has none); with type it returns the field tree, system included. A leaf is a string: the " +
+      'kind, then constraints and the default, for example "integer, min 0, default 10". {$array: x}, {$set: x} and ' +
+      "{$map: x, $keys} hold elements x, and a collection of documents is named, not expanded: read its entries as " +
+      "the document it names (an item's activities as Activity, its advancement as Advancement). Config lists the dnd5e " +
+      "key tables; with type it returns the legal keys of that table with their labels (toolIds gives each tool's item " +
+      "UUID instead). path picks a subtree of a field tree, for example system.attributes.",
+    input: z.object({
+      document: z.enum(["Actor", "Item", "ActiveEffect", "Token", "Activity", "Advancement", "Config"]),
+      type: nonBlank.optional().describe("A type of the document, or a Config table name."),
+      path: nonBlank.optional().describe("Dot path into the field tree, for example system.abilities.")
+    })
   })
 };
 

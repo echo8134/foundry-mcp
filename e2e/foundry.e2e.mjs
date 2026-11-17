@@ -107,6 +107,13 @@ try {
 }
 if (status?.active !== true) inconclusive(`no world is active at ${FOUNDRY_URL}`);
 console.log(`PASS foundry reports an active world (${status.world ?? "unnamed"}, version ${status.version ?? "?"})`);
+// The test creates and deletes documents, so it runs only in a world kept for it.
+const TEST_WORLD = process.env.FOUNDRY_WORLD ?? "mcp-test";
+if (status.world !== TEST_WORLD) {
+  inconclusive(
+    `the active world is "${status.world}", not the test world "${TEST_WORLD}". Launch "${TEST_WORLD}", or set FOUNDRY_WORLD to the world this test may write to.`
+  );
+}
 
 const port = await freePort();
 const tokenDir = await mkdtemp(join(tmpdir(), "foundry-mcp-e2e-"));
@@ -713,6 +720,141 @@ try {
         await top?.delete({ deleteSubfolders: true, deleteContents: true });
       }, sceneFolder)
       .catch((e) => console.log(`cleanup: folder delete failed: ${e.message}`));
+  }
+
+  const actorName = `foundry-mcp e2e goblin ${Date.now()}`;
+  let made;
+  try {
+    await check("an npc with one item and one friendly token of it are created in the page", async () => {
+      made = await page.evaluate(
+        async (id, name) => {
+          const actor = await Actor.implementation.create({
+            name,
+            type: "npc",
+            system: { attributes: { hp: { value: 7, max: 7 } }, details: { cr: 0.25 } },
+            items: [{ name: "e2e scimitar", type: "weapon" }]
+          });
+          const scene = game.scenes.get(id);
+          const tokenData = (await actor.getTokenDocument({ x: 400, y: 300, disposition: 1 })).toObject();
+          const [token] = await scene.createEmbeddedDocuments("Token", [tokenData]);
+          return { actorId: actor.id, itemId: actor.items.contents[0].id, tokenId: token.id, linked: token.actorLink };
+        },
+        sceneId,
+        actorName
+      );
+      assert(made?.actorId && made.tokenId, `nothing was made: ${JSON.stringify(made)}`);
+    });
+
+    await check("list_actors finds the npc by part of its name, with its challenge rating", async () => {
+      const result = await tool(client, "list_actors", { name: actorName.toUpperCase(), type: "npc" });
+      same(
+        result.actors.map((a) => [a.id, a.name, a.type, a.cr, a.managed]),
+        [[made.actorId, actorName, "npc", 0.25, false]],
+        "listed actors"
+      );
+      same([result.total, result.truncated], [1, false], "total and truncated");
+    });
+
+    await check(
+      "get_actor returns stored system data, derived numbers, the item asked for and the placed token",
+      async () => {
+        const actor = await tool(client, "get_actor", { actor: made.actorId, items: [made.itemId] });
+        same([actor.uuid, actor.type, actor.system.details.cr], [`Actor.${made.actorId}`, "npc", 0.25], "stored data");
+        same([actor.derived.hp?.value, actor.derived.hp?.max], [7, 7], "derived hp");
+        assert(Number.isFinite(actor.derived.ac), `derived ac was ${actor.derived.ac}`);
+        assert(
+          Number.isFinite(actor.derived.abilities?.str?.save),
+          `str save was ${actor.derived.abilities?.str?.save}`
+        );
+        assert(
+          Number.isFinite(actor.derived.skills?.prc?.passive),
+          `passive perception was ${actor.derived.skills?.prc}`
+        );
+        same(
+          actor.items.map((i) => [i.id, i.name, i.type]),
+          [[made.itemId, "e2e scimitar", "weapon"]],
+          "items"
+        );
+        same([actor.itemData[0]._id, actor.itemData[0].type], [made.itemId, "weapon"], "item data");
+        same(
+          actor.tokens,
+          [{ sceneId, sceneName: "foundry-mcp e2e", tokenId: made.tokenId, name: actorName }],
+          "tokens"
+        );
+      }
+    );
+
+    await check("get_actor reads the token's own actor by its UUID, with only that token", async () => {
+      const uuid = made.linked
+        ? `Actor.${made.actorId}`
+        : `Scene.${sceneId}.Token.${made.tokenId}.Actor.${made.actorId}`;
+      const actor = await tool(client, "get_actor", { actor: uuid });
+      same(
+        [actor.uuid, actor.name, actor.tokens.map((t) => t.tokenId)],
+        [uuid, actorName, [made.tokenId]],
+        "token actor"
+      );
+    });
+
+    await check(
+      "get_scene lists the token with its centre in scene pixels and the hit points of its actor",
+      async () => {
+        const scene = await tool(client, "get_scene", { sceneId });
+        const token = scene.tokens.find((t) => t.id === made.tokenId);
+        assert(token, `token ${made.tokenId} missing from ${JSON.stringify(scene.tokens)}`);
+        same(
+          [token.actorId, token.at, token.width, token.height, token.disposition, token.hidden, token.hp],
+          [made.actorId, [150, 150], 1, 1, 1, false, { value: 7, max: 7 }],
+          "token"
+        );
+        const listed = (await tool(client, "list_scenes", {})).scenes.find((s) => s.id === sceneId);
+        same(listed.tokens, { total: 1, managed: 0 }, "token counts in list_scenes");
+      }
+    );
+
+    await check("get_scene_image with showTokens outlines the friendly token in green", async () => {
+      const { image, frame } = imageContent(await tool(client, "get_scene_image", { sceneId, showTokens: true }));
+      same(frame, { width: 1000, height: 800 }, "frame");
+      const [[r, g, b]] = (await decode(image, [[0.2, 0.1875]])).pixels;
+      assert(
+        g > 160 && r < 140 && b < 150,
+        `no green outline at the token's right edge, pixel was rgb(${r},${g},${b})`
+      );
+    });
+
+    await check("get_schema reads the installed dnd5e: types, a field tree, a subtree and a key table", async () => {
+      const { types } = await tool(client, "get_schema", { document: "Actor" });
+      assert(types.includes("npc") && types.includes("character") && !types.includes("base"), `actor types ${types}`);
+      const npc = await tool(client, "get_schema", { document: "Actor", type: "npc" });
+      same([npc.fields.items, npc.fields.effects], ["collection of Item", "collection of ActiveEffect"], "collections");
+      assert(typeof npc.fields.system.abilities?.$map === "object", "system.abilities is not a map");
+      const cr = await tool(client, "get_schema", { document: "Actor", type: "npc", path: "system.details.cr" });
+      assert(/^number/.test(cr.fields), `system.details.cr was ${JSON.stringify(cr.fields)}`);
+      const weapon = await tool(client, "get_schema", { document: "Item", type: "weapon", path: "system.activities" });
+      same(weapon.fields, "collection of Activity", "weapon activities");
+      const token = await tool(client, "get_schema", { document: "Token", path: "disposition" });
+      assert(/one of -2\|-1\|0\|1/.test(token.fields), `token disposition was ${token.fields}`);
+      const activities = await tool(client, "get_schema", { document: "Activity" });
+      assert(activities.types.includes("attack"), `activity types ${activities.types}`);
+      const attack = await tool(client, "get_schema", { document: "Activity", type: "attack" });
+      assert(typeof attack.fields.attack === "object", "the attack activity has no attack fields");
+      const { keys } = await tool(client, "get_schema", { document: "Config", type: "abilities" });
+      assert(typeof keys.str === "string" && !keys.str.startsWith("DND5E."), `str label was ${keys.str}`);
+    });
+  } finally {
+    await page
+      .evaluate(
+        async (id, name) => {
+          for (const actor of game.actors.filter((a) => a.name === name)) {
+            const tokens = game.scenes.get(id)?.tokens.filter((t) => t.actorId === actor.id) ?? [];
+            for (const token of tokens) await token.delete();
+            await actor.delete();
+          }
+        },
+        sceneId,
+        actorName
+      )
+      .catch((e) => console.log(`cleanup: actor delete failed: ${e.message}`));
   }
 
   await check(

@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import {
-  MethodError,
-  ERROR_CODES as MODULE_ERROR_CODES,
-  METHODS as MODULE_METHODS,
-  QUEUE_BUDGET_MS,
-  timing
-} from "../module/scripts/methods.mjs";
+import { MethodError, ERROR_CODES as MODULE_ERROR_CODES } from "../module/scripts/errors.mjs";
+import { METHODS as MODULE_METHODS, QUEUE_BUDGET_MS, timing } from "../module/scripts/methods.mjs";
+import { SURFACE } from "../module/scripts/surface.mjs";
 import { ERROR_CODES as PROTOCOL_ERROR_CODES, METHODS as PROTOCOL_METHODS } from "../src/protocol.ts";
 import { TOOLS } from "../src/tools.ts";
 
@@ -15,6 +11,29 @@ describe("method list", () => {
     const expected = [...PROTOCOL_METHODS].sort();
     assert.deepEqual(Object.keys(MODULE_METHODS).sort(), expected);
     assert.deepEqual(Object.keys(TOOLS).sort(), expected);
+  });
+
+  it("has a method surface number that was raised with the last change of the method list", () => {
+    assert.deepEqual(
+      { surface: SURFACE, methods: [...PROTOCOL_METHODS].sort() },
+      {
+        surface: 2,
+        methods: [
+          "create_walls",
+          "delete_walls",
+          "ensure_scene",
+          "get_actor",
+          "get_scene",
+          "get_scene_image",
+          "get_schema",
+          "list_actors",
+          "list_scenes",
+          "sync_lights",
+          "sync_walls"
+        ]
+      },
+      "The method list changed: raise SURFACE in module/scripts/surface.mjs and update both here."
+    );
   });
 
   it("derives each tool name from its table key", () => {
