@@ -19,7 +19,9 @@ export const METHODS = [
   "get_schema",
   "place_tokens",
   "update_tokens",
-  "delete_tokens"
+  "delete_tokens",
+  "ensure_actor",
+  "delete_actors"
 ] as const;
 export type Method = (typeof METHODS)[number];
 

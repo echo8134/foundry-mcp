@@ -1188,6 +1188,396 @@ try {
       .catch((e) => console.log(`cleanup: actor delete failed: ${e.message}`));
   }
 
+  const actorFolder = `foundry-mcp e2e actors ${Date.now()}`;
+  try {
+    // The spellings the Foundry server rewrites when it stores HTML: a self-closing tag, single quotes, a style with
+    // spaces, entities, a comment, a table without a tbody, and an ampersand that starts no entity.
+    const biography =
+      "<p class='lair' style=\"color: red\">Cold<br />and &mdash; dark&nbsp;halls<!-- draft --></p>" +
+      "<table><tr><td>&Reference[prone]</td></tr></table>";
+    const knight = {
+      name: "e2e knight",
+      type: "npc",
+      folder: [actorFolder, "Knights"],
+      system: {
+        attributes: {
+          ac: { flat: 18, calcs: ["natural"] },
+          hp: { max: 52 },
+          movement: { speeds: { walk: "30" } }
+        },
+        details: { cr: 0.5, biography: { value: biography } },
+        skills: { ath: { value: 1 }, prc: { value: 2 } }
+      }
+    };
+    const storedActor = (id) =>
+      page.evaluate((actorId) => {
+        const actor = game.actors.get(actorId);
+        const { system, flags } = actor._source;
+        return {
+          hp: [system.attributes.hp.value, system.attributes.hp.max],
+          speed: system.attributes.movement.speeds.walk,
+          cr: system.details.cr,
+          biography: system.details.biography.value,
+          tools: Object.keys(system.tools),
+          world: flags.world ?? null,
+          managed: flags["foundry-mcp"]?.managed === true,
+          folder: actor.folder?.name ?? null
+        };
+      }, id);
+    let knightId;
+    await check(
+      "ensure_actor creates an npc in new folders, and derived shows the armor class, hit points and skills it amounts to",
+      async () => {
+        const result = await tool(client, "ensure_actor", knight);
+        knightId = result.id;
+        same(
+          [result.created, result.type, result.folder, result.unapplied],
+          [true, "npc", [actorFolder, "Knights"], []],
+          "result"
+        );
+        assert(result.changed.includes("system.attributes.hp.value"), `changed was ${result.changed}`);
+        const { ac, hp, prof, skills } = result.derived;
+        same([ac, hp.value, hp.max], [18, 52, 52], "derived armor class and hit points");
+        same([skills.ath.total, skills.prc.total, skills.ste.total], [prof, 2 * prof, 0], "skill totals");
+        const stored = await storedActor(knightId);
+        same(
+          [stored.hp, stored.speed, stored.cr, stored.managed, stored.folder],
+          [[52, 52], "30", 0.5, true, "Knights"],
+          "stored"
+        );
+        assert(
+          stored.biography !== biography,
+          "the server stored the biography as it was given, so the test shows nothing"
+        );
+        assert(stored.biography.includes("<tbody>") && stored.biography.includes("&amp;Reference"), stored.biography);
+        const listed = await tool(client, "list_actors", { folder: [actorFolder] });
+        same(
+          listed.actors.map((a) => [a.id, a.managed, a.cr]),
+          [[knightId, true, 0.5]],
+          "listed"
+        );
+      }
+    );
+
+    await check("ensure_actor run again with the same input changes nothing, the biography included", async () => {
+      const before = await page.evaluate((id) => JSON.stringify(game.actors.get(id)._source), knightId);
+      const again = await tool(client, "ensure_actor", knight);
+      same([again.id, again.created, again.changed, again.unapplied], [knightId, false, [], []], "repeat");
+      same(await page.evaluate((id) => JSON.stringify(game.actors.get(id)._source), knightId), before, "stored data");
+    });
+
+    await check(
+      "ensure_actor writes the one value that differs, and a biography that says something else",
+      async () => {
+        const harder = structuredClone(knight);
+        harder.system.details.cr = 3;
+        const result = await tool(client, "ensure_actor", harder);
+        same(
+          [result.changed, result.unapplied, result.derived.xp],
+          [["system.details.cr"], [], 700],
+          "challenge rating"
+        );
+        harder.system.details.biography.value = biography.replace("Cold", "Warm");
+        const rewritten = await tool(client, "ensure_actor", harder);
+        same([rewritten.changed, rewritten.unapplied], [["system.details.biography.value"], []], "biography");
+        const stored = await storedActor(knightId);
+        assert(stored.biography.startsWith('<p class="lair" style="color:red">Warm<br>and — dark'), stored.biography);
+        same((await tool(client, "ensure_actor", harder)).changed, [], "repeat");
+      }
+    );
+
+    await check("ensure_actor removes a map entry and a flag key, and ignores them once they are gone", async () => {
+      const added = await tool(client, "ensure_actor", {
+        actor: knightId,
+        system: { tools: { thief: { value: 1 } } },
+        flags: { world: { note: "x", keep: 1 } }
+      });
+      assert(added.changed.includes("system.tools.thief.value"), `changed was ${added.changed}`);
+      const args = { actor: knightId, remove: ["system.tools.thief", "flags.world.note"] };
+      const removed = await tool(client, "ensure_actor", args);
+      same([removed.changed, removed.unapplied], [["system.tools.thief", "flags.world.note"], []], "removed");
+      const stored = await storedActor(knightId);
+      same([stored.tools, stored.world], [[], { keep: 1 }], "stored");
+      same((await tool(client, "ensure_actor", args)).changed, [], "repeat");
+    });
+
+    await check(
+      "ensure_actor refuses what it cannot store, a null that would reset an entry and a hand-made actor of the name",
+      async () => {
+        const before = await page.evaluate((id) => JSON.stringify(game.actors.get(id)._source), knightId);
+        const refuses = (args, pattern) =>
+          assertRejects(tool(client, "ensure_actor", { actor: knightId, ...args }), pattern);
+        await refuses(
+          { system: { attributes: { ac: { value: 20 } } } },
+          /No such field: system\.attributes\.ac\.value/
+        );
+        await refuses(
+          { system: { attributes: { ac: { calc: "flat" } } } },
+          /Derived, never stored: system\.attributes\.ac\.calc/
+        );
+        await refuses({ system: { tools: { thief: null } } }, /system\.tools\.thief: null would be stored as \{/);
+        await refuses({ system: { details: { cr: "abc" } } }, /Foundry's actor model refuses the data/);
+        await refuses({ remove: ["system.details.cr"] }, /Not an entry that can be removed: system\.details\.cr/);
+        await refuses({ flags: { "foundry-mcp": { managed: false } } }, /flags\.foundry-mcp cannot be given/);
+        await refuses({ name: "renamed", system: { skills: { stealth: { value: 1 } } } }, /the key must be one of acr/);
+        same(await page.evaluate((id) => JSON.stringify(game.actors.get(id)._source), knightId), before, "stored data");
+        const handMade = await page.evaluate(
+          async (name) => (await Actor.implementation.create({ name, type: "npc" })).id,
+          `${actorFolder} by hand`
+        );
+        try {
+          await assertRejects(
+            tool(client, "ensure_actor", { name: `${actorFolder} by hand`, system: { details: { cr: 9 } } }),
+            new RegExp(`was not made by this bridge \\(${handMade}\\)\\. Pass its id as actor`)
+          );
+          await assertRejects(tool(client, "delete_actors", { ids: [handMade] }), /not made by this bridge/);
+          assert(await page.evaluate((id) => game.actors.has(id), handMade), "the hand-made actor was deleted");
+          same(
+            (await tool(client, "delete_actors", { ids: [handMade], handMade: true })).deleted,
+            1,
+            "deleted by hand"
+          );
+        } finally {
+          await page.evaluate((id) => game.actors.get(id)?.delete(), handMade);
+        }
+      }
+    );
+
+    const fromPack = await page.evaluate(async () => {
+      const index = await game.packs.get("dnd5e.actors24").getIndex();
+      const uuid = (type) => index.find((entry) => entry.type === type)?.uuid ?? null;
+      // An npc without a portrait, where the pack has one: its img is stored as null.
+      const bare = index.find((entry) => entry.type === "npc" && !entry.img);
+      // The one pack actor that stores a key outside the skills dnd5e keeps (system.skills.value).
+      const dragon = index.find((entry) => entry._id === "mmAncientGoldDra")?.uuid ?? null;
+      return { npc: bare?.uuid ?? uuid("npc"), vehicle: uuid("vehicle"), dragon };
+    });
+    await check(
+      "ensure_actor copies a vehicle from dnd5e.actors24, and what get_actor returns of it is taken back unchanged",
+      async () => {
+        assert(fromPack.vehicle, "dnd5e.actors24 has no vehicle");
+        const args = { name: "e2e ship", from: fromPack.vehicle, folder: [actorFolder] };
+        const copy = await tool(client, "ensure_actor", args);
+        same(
+          [copy.created, copy.type, copy.changed, copy.unapplied],
+          [true, "vehicle", ["name", "folder"], []],
+          "copy"
+        );
+        same((await tool(client, "ensure_actor", args)).created, false, "the repeat copies nothing");
+        const legacy = await page.evaluate((id) => game.actors.get(id)._source.system.attributes.ac.calc, copy.id);
+        same(legacy, "flat", "the stored key that dnd5e's model would not store again");
+        const read = await tool(client, "get_actor", { actor: copy.id });
+        same("calc" in read.system.attributes.ac, false, "get_actor returns the legacy key");
+        const { name, img, system, prototypeToken, ownership } = read;
+        const back = await tool(client, "ensure_actor", {
+          actor: copy.id,
+          name,
+          img,
+          system,
+          prototypeToken,
+          ownership
+        });
+        same([back.changed, back.unapplied], [[], []], "passed back");
+      }
+    );
+
+    await check(
+      "what get_actor returns of a pack actor with a key outside a map's fixed keys is taken back by ensure_actor",
+      async () => {
+        assert(fromPack.dragon, "dnd5e.actors24 has no Ancient Gold Dragon");
+        const stray = await page.evaluate(
+          async (uuid) => "value" in (await fromUuid(uuid))._source.system.skills,
+          fromPack.dragon
+        );
+        same(stray, true, "the pack actor stores system.skills.value");
+        const fromThePack = await tool(client, "get_actor", { actor: fromPack.dragon });
+        same("value" in fromThePack.system.skills, false, "get_actor returns the stray key");
+        const copy = await tool(client, "ensure_actor", {
+          name: "e2e dragon",
+          from: fromPack.dragon,
+          folder: [actorFolder]
+        });
+        for (const read of [fromThePack, await tool(client, "get_actor", { actor: copy.id })]) {
+          const { system, prototypeToken, ownership } = read;
+          const back = await tool(client, "ensure_actor", { actor: copy.id, system, prototypeToken, ownership });
+          same([back.changed, back.unapplied], [[], []], `passed back from ${read.uuid}`);
+        }
+      }
+    );
+
+    await check(
+      "ensure_actor gives a new character the prototype token it was given in one call, where dnd5e sets its own",
+      async () => {
+        const args = {
+          name: "e2e hero",
+          type: "character",
+          folder: [actorFolder],
+          prototypeToken: { actorLink: false, disposition: -1 }
+        };
+        const hero = await tool(client, "ensure_actor", args);
+        same([hero.created, hero.unapplied], [true, []], "created");
+        assert(hero.changed.includes("prototypeToken.actorLink"), `changed was ${hero.changed}`);
+        const stored = await page.evaluate((id) => {
+          const { actorLink, disposition } = game.actors.get(id)._source.prototypeToken;
+          return [actorLink, disposition];
+        }, hero.id);
+        same(stored, [false, -1], "stored prototype token");
+        same((await tool(client, "ensure_actor", args)).changed, [], "repeat");
+      }
+    );
+
+    let copyId;
+    let tokenId;
+    await check(
+      "ensure_actor copies an npc with given data over it, and changes the actor of its token through the token's UUID",
+      async () => {
+        assert(fromPack.npc, "dnd5e.actors24 has no npc");
+        const source = await page.evaluate(async (uuid) => {
+          const actor = await fromUuid(uuid);
+          return { items: actor.items.size, cr: actor._source.system.details.cr, img: actor._source.img };
+        }, fromPack.npc);
+        const copy = await tool(client, "ensure_actor", {
+          name: "e2e copy",
+          from: fromPack.npc,
+          folder: [actorFolder],
+          system: { attributes: { hp: { max: 40 } } }
+        });
+        copyId = copy.id;
+        same([copy.created, copy.derived.hp.value, copy.derived.hp.max], [true, 40, 40], "copy");
+        const read = await tool(client, "get_actor", { actor: copyId });
+        same(
+          [read.items.length, read.system.details.cr, read.managed, read.img],
+          [source.items, source.cr, true, source.img],
+          "what was copied"
+        );
+        const { name, img, system, prototypeToken, ownership } = read;
+        const back = await tool(client, "ensure_actor", {
+          actor: copyId,
+          name,
+          img,
+          system,
+          prototypeToken,
+          ownership
+        });
+        same([back.changed, back.unapplied], [[], []], "passed back");
+        const placed = await tool(client, "place_tokens", {
+          sceneId,
+          tokens: [{ actor: copyId, at: [550, 150], actorLink: false }]
+        });
+        tokenId = placed.tokens[0].id;
+        const uuid = `Scene.${sceneId}.Token.${tokenId}.Actor.${copyId}`;
+        const wounded = { actor: uuid, name: "e2e wounded", system: { attributes: { hp: { value: 7 } } } };
+        const result = await tool(client, "ensure_actor", wounded);
+        same([result.uuid, result.name, result.folder, result.unapplied], [uuid, "e2e wounded", [], []], "token actor");
+        same([result.derived.hp.value, result.derived.hp.max], [7, 40], "derived hit points of the token");
+        const inPage = await page.evaluate(
+          (scene, token, actor) => {
+            const delta = game.scenes.get(scene).tokens.get(token).delta._source;
+            const world = game.actors.get(actor);
+            return [delta.name, delta.system.attributes.hp.value, world.name, world._source.system.attributes.hp.value];
+          },
+          sceneId,
+          tokenId,
+          copyId
+        );
+        same(inPage, ["e2e wounded", 7, "e2e copy", 40], "the token's own changes, and the world actor");
+        same((await tool(client, "ensure_actor", wounded)).changed, [], "repeat");
+        await assertRejects(
+          tool(client, "ensure_actor", { actor: uuid, folder: [actorFolder] }),
+          /is the actor of a token/
+        );
+      }
+    );
+
+    await check(
+      "ensure_actor removes what a token's actor added, in one call with a changed value, and the server keeps both calls",
+      async () => {
+        const uuid = `Scene.${sceneId}.Token.${tokenId}.Actor.${copyId}`;
+        // What the server returns for the scene, beside what the page shows: they part when a write is lost.
+        const delta = () =>
+          page.evaluate(
+            async (scene, token) => {
+              const [fresh] = await CONFIG.DatabaseBackend.get(getDocumentClass("Scene"), { query: { _id: scene } });
+              const pick = (data) => ({
+                hp: data?.system?.attributes?.hp?.value ?? null,
+                tools: Object.keys(data?.system?.tools ?? {}),
+                world: Object.keys(data?.flags?.world ?? {})
+              });
+              return {
+                page: pick(game.scenes.get(scene).tokens.get(token).delta._source),
+                server: pick(fresh.tokens.get(token)._source.delta)
+              };
+            },
+            sceneId,
+            tokenId
+          );
+        const added = await tool(client, "ensure_actor", {
+          actor: uuid,
+          system: { tools: { smith: { value: 1 } } },
+          flags: { world: { limp: 1 } }
+        });
+        assert(added.changed.includes("system.tools.smith.value"), `changed was ${added.changed}`);
+        const kept = { hp: 7, tools: ["smith"], world: ["limp"] };
+        same(await delta(), { page: kept, server: kept }, "a second call keeps what the first wrote");
+        const args = {
+          actor: uuid,
+          system: { attributes: { hp: { value: 5 } } },
+          remove: ["system.tools.smith", "flags.world.limp"]
+        };
+        const removed = await tool(client, "ensure_actor", args);
+        same(
+          [removed.changed, removed.unapplied],
+          [["system.attributes.hp.value", "system.tools.smith", "flags.world.limp"], []],
+          "removed"
+        );
+        const after = { hp: 5, tools: [], world: [] };
+        same(await delta(), { page: after, server: after }, "the token's own changes after the removal");
+        same((await tool(client, "ensure_actor", args)).changed, [], "repeat");
+        await assertRejects(
+          tool(client, "ensure_actor", { actor: uuid, remove: ["system.abilities.str"] }),
+          /system\.abilities\.str comes from the world actor e2e copy/
+        );
+      }
+    );
+
+    await check(
+      "delete_actors refuses an actor that has a token placed, and deletes it once the token is gone",
+      async () => {
+        const all = (await tool(client, "list_actors", { folder: [actorFolder] })).actors.map((a) => a.id);
+        same(all.length, 5, "actors in the folder");
+        await assertRejects(
+          tool(client, "delete_actors", { ids: all }),
+          /e2e copy \(\w+\) on foundry-mcp e2e\. Delete the tokens first/
+        );
+        same((await tool(client, "list_actors", { folder: [actorFolder] })).total, 5, "actors after the refusal");
+        same((await tool(client, "delete_tokens", { sceneId, ids: [tokenId] })).deleted, 1, "token deleted");
+        const result = await tool(client, "delete_actors", { ids: [...all, "notAnActorId00000"] });
+        same([result.deleted, [...result.ids].sort()], [5, [...all].sort()], "deleted");
+        same(await page.evaluate((ids) => ids.filter((id) => game.actors.has(id)), all), [], "actors left in the page");
+      }
+    );
+  } finally {
+    await page
+      .evaluate(
+        async (id, name) => {
+          const top = game.folders.find((f) => f.type === "Actor" && f.name === name && !f.folder);
+          const inFolder = (actor) => {
+            for (let folder = actor.folder; folder; folder = folder.folder) if (folder === top) return true;
+            return false;
+          };
+          const actors = top ? game.actors.filter(inFolder) : [];
+          for (const actor of actors) {
+            const tokens = game.scenes.get(id)?.tokens.filter((t) => t.actorId === actor.id) ?? [];
+            for (const token of tokens) await token.delete();
+          }
+          await top?.delete({ deleteSubfolders: true, deleteContents: true });
+        },
+        sceneId,
+        actorFolder
+      )
+      .catch((e) => console.log(`cleanup: actor folder delete failed: ${e.message}`));
+  }
+
   await check(
     "with a wrong token in the page the module refuses the server and tool calls fail with no bridge",
     async () => {

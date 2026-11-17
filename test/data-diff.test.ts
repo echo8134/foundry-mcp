@@ -3,10 +3,18 @@ import { describe, it } from "node:test";
 import {
   changedPaths,
   diffData,
+  dropAt,
+  entriesToRemove,
   explainRecasts,
+  givesValueOn,
+  hasPath,
   pickData,
+  putAt,
   recastLeaves,
-  sameData
+  type SameLeaf,
+  sameData,
+  updateFor,
+  writeOutcome
 } from "../module/scripts/data-diff.mjs";
 
 describe("recastLeaves", () => {
@@ -205,6 +213,65 @@ describe("diffData", () => {
   });
 });
 
+describe("diffData with values that say the same in other words", () => {
+  const spellings: SameLeaf = (path, wanted, stored) =>
+    path.endsWith("bio") &&
+    typeof wanted === "string" &&
+    typeof stored === "string" &&
+    wanted.toLowerCase() === stored.toLowerCase();
+
+  it("takes two values as one where the caller says they say the same, and only there", () => {
+    const stored = { bio: "<P>Old</P>", name: "Goblin" };
+    assert.deepEqual(diffData({ bio: "<p>old</p>", name: "goblin" }, stored, spellings), {
+      paths: ["name"],
+      changes: { name: "goblin" }
+    });
+    assert.deepEqual(diffData({ bio: "<p>old</p>" }, stored).paths, ["bio"]);
+  });
+
+  it("sends the wanted value as it was given when it says something else", () => {
+    const stored = { details: { bio: "<p>old</p>" } };
+    assert.deepEqual(diffData({ details: { bio: "<P>New</P>" } }, stored, spellings), {
+      paths: ["details.bio"],
+      changes: { details: { bio: "<P>New</P>" } }
+    });
+  });
+
+  it("asks with the path of the value, also inside a list, which is still sent whole", () => {
+    const asked: string[] = [];
+    const recording: SameLeaf = (path, wanted, stored) => {
+      asked.push(path);
+      return spellings(path, wanted, stored);
+    };
+    const stored = {
+      members: [
+        { bio: "<P>A</P>", level: 1 },
+        { bio: "<p>b</p>", level: 2 }
+      ]
+    };
+    const same = {
+      members: [
+        { bio: "<p>a</p>", level: 1 },
+        { bio: "<p>B</p>", level: 2 }
+      ]
+    };
+    assert.deepEqual(diffData(same, stored, recording).paths, []);
+    assert.deepEqual(asked, ["members.0.bio", "members.1.bio"]);
+    const other = {
+      members: [
+        { bio: "<p>a</p>", level: 1 },
+        { bio: "<p>B</p>", level: 3 }
+      ]
+    };
+    assert.deepEqual(diffData(other, stored, spellings), { paths: ["members"], changes: other });
+  });
+
+  it("does not ask about a value that is missing on one side or of another shape", () => {
+    const always: SameLeaf = () => true;
+    assert.deepEqual(diffData({ a: [1, 2], b: { c: 1 } }, { a: [1], b: { c: 1, d: 2 } }, always).paths, ["a"]);
+  });
+});
+
 describe("sameData", () => {
   it("is true for data that is equal in depth, whatever the order of its keys", () => {
     assert.equal(sameData({ managed: true, list: [1, { a: null }] }, { list: [1, { a: null }], managed: true }), true);
@@ -277,5 +344,156 @@ describe("changedPaths", () => {
   it("finds nothing when the write changed nothing that was wanted", () => {
     const stored = { hidden: false, light: { dim: 10 } };
     assert.deepEqual(changedPaths({ hidden: true, light: { dim: 20 } }, structuredClone(stored), stored), []);
+  });
+});
+
+describe("hasPath and givesValueOn", () => {
+  const data = { flags: { world: { a: { b: 1 }, c: 2, none: null } }, tools: {} };
+
+  it("finds a value at a dot path through own keys only", () => {
+    for (const path of ["flags", "flags.world.a", "flags.world.a.b", "flags.world.c", "flags.world.none", "tools"]) {
+      assert.equal(hasPath(data, path), true, path);
+    }
+    for (const path of ["flags.world.x", "tools.thief", "flags.world.c.deep", "flags.toString", "constructor"]) {
+      assert.equal(hasPath(data, path), false, path);
+    }
+  });
+
+  it("tells a value on the way to a path from a path that leads nowhere", () => {
+    assert.equal(givesValueOn(data, "flags.world.c.deep"), true, "c is a number, and the path goes on below it");
+    assert.equal(givesValueOn(data, "flags.world.none.deep"), true, "null is a value");
+    assert.equal(givesValueOn(data, "flags.world.a"), true);
+    assert.equal(givesValueOn(data, "flags.world.x.deep"), false);
+    assert.equal(givesValueOn(data, "tools.thief"), false, "an object without keys gives nothing below it");
+  });
+});
+
+describe("entriesToRemove", () => {
+  it("keeps the paths that have an entry, once each, and drops those inside another of them", () => {
+    const stored = { tools: { thief: { value: 1 }, smith: { value: 1 } }, flags: { world: { a: { b: 1 } } } };
+    assert.deepEqual(
+      entriesToRemove(["tools.thief", "tools.herb", "tools.thief", "flags.world.a.b", "flags.world.a"], stored),
+      ["tools.thief", "flags.world.a"]
+    );
+    assert.deepEqual(entriesToRemove(["tools.thief"], { tools: { thiefKit: 1 } }), []);
+  });
+
+  it("keeps an entry whose key only starts like another one's", () => {
+    const stored = { tools: { thief: 1, thiefKit: 2 } };
+    assert.deepEqual(entriesToRemove(["tools.thief", "tools.thiefKit"], stored), ["tools.thief", "tools.thiefKit"]);
+  });
+
+  it("does not take a path that goes on below a value that is no object as an entry", () => {
+    assert.deepEqual(entriesToRemove(["flags.world.c.deep"], { flags: { world: { c: 2 } } }), []);
+  });
+});
+
+describe("putAt and dropAt", () => {
+  it("puts a value at a dot path, into the objects that are there and through new ones where none is", () => {
+    const data = { system: { tools: { smith: { value: 1 } } } };
+    putAt(data, "system.tools.thief", "gone");
+    putAt(data, "flags.world.a", "gone");
+    putAt(data, "name", "Grik");
+    assert.deepEqual(data, {
+      system: { tools: { smith: { value: 1 }, thief: "gone" } },
+      flags: { world: { a: "gone" } },
+      name: "Grik"
+    });
+  });
+
+  it("writes own keys and never the prototype of an object", () => {
+    const data: Record<string, unknown> = {};
+    putAt(data, "__proto__.polluted", true);
+    assert.equal(({} as Record<string, unknown>).polluted, undefined);
+    assert.deepEqual(Object.keys(data), ["__proto__"]);
+    const inner: Record<string, any> = { flags: {} };
+    putAt(inner, "flags.__proto__", { polluted: true });
+    assert.equal(Object.getPrototypeOf(inner.flags), Object.prototype);
+    assert.deepEqual(Object.keys(inner.flags), ["__proto__"]);
+  });
+
+  it("deletes the key a dot path names, and nothing when the path leads nowhere", () => {
+    const data = { name: "Goblin", system: { tools: { thief: { value: 1 }, smith: { value: 1 } }, cr: 2 } };
+    dropAt(data, "system.tools.thief");
+    dropAt(data, "system.tools.herb");
+    dropAt(data, "system.cr.deep");
+    dropAt(data, "system.senses.ranges.x");
+    dropAt(data, "name");
+    assert.deepEqual(data, { system: { tools: { smith: { value: 1 } }, cr: 2 } });
+  });
+});
+
+describe("updateFor and writeOutcome", () => {
+  const GONE = { deleted: true };
+  const stored = () => ({
+    name: "Goblin",
+    system: { hp: { value: 7, max: 7 }, tools: { thief: { value: 1 }, smith: { value: 1 } } },
+    flags: { world: { note: "x" } }
+  });
+
+  it("puts the leaves that differ and the deletions of the entries that are there into one update", () => {
+    const asked = {
+      wanted: { system: { hp: { value: 3, max: 7 } } },
+      remove: ["system.tools.thief", "system.tools.herb"]
+    };
+    assert.deepEqual(updateFor(asked, stored(), GONE), {
+      update: { system: { hp: { value: 3 }, tools: { thief: GONE } } },
+      writes: true
+    });
+  });
+
+  it("writes nothing when the data is as wanted and no entry to remove is there", () => {
+    const asked = {
+      wanted: { name: "Goblin", system: { hp: { max: 7 } } },
+      remove: ["system.tools.herb", "flags.core"]
+    };
+    assert.deepEqual(updateFor(asked, stored(), GONE), { update: {}, writes: false });
+    assert.deepEqual(updateFor({ wanted: {} }, stored(), GONE), { update: {}, writes: false });
+  });
+
+  it("writes for a removal alone", () => {
+    assert.deepEqual(updateFor({ wanted: {}, remove: ["flags.world.note"] }, stored(), GONE), {
+      update: { flags: { world: { note: GONE } } },
+      writes: true
+    });
+  });
+
+  it("takes values as one where the caller says they say the same, before the write and after it", () => {
+    const same: SameLeaf = (path, wanted, kept) => path === "name" && String(wanted).trim() === kept;
+    const asked = { wanted: { name: " Goblin " }, same };
+    assert.equal(updateFor(asked, stored(), GONE).writes, false);
+    assert.deepEqual(writeOutcome(asked, stored(), stored()), { changed: [], unapplied: [] });
+    assert.deepEqual(writeOutcome({ wanted: { name: " Goblin " } }, stored(), stored()).unapplied, ["name"]);
+  });
+
+  it("reports a removed entry as changed, one that is still there as unapplied, and one that never was as neither", () => {
+    const asked = {
+      wanted: { system: { hp: { value: 3 } } },
+      remove: ["system.tools.thief", "system.tools.smith", "system.tools.herb", "system.tools.thief"]
+    };
+    const after = stored();
+    after.system.hp.value = 3;
+    delete (after.system.tools as Record<string, unknown>).thief;
+    assert.deepEqual(writeOutcome(asked, stored(), after), {
+      changed: ["system.hp.value", "system.tools.thief"],
+      unapplied: ["system.tools.smith"]
+    });
+  });
+
+  it("reports a wanted leaf Foundry stored otherwise as changed and as unapplied at once", () => {
+    const after = stored();
+    after.system.hp.value = 5;
+    assert.deepEqual(writeOutcome({ wanted: { system: { hp: { value: 3 } } } }, stored(), after), {
+      changed: ["system.hp.value"],
+      unapplied: ["system.hp.value"]
+    });
+  });
+
+  it("reports every wanted leaf of a document that did not exist before as changed", () => {
+    const after = stored();
+    assert.deepEqual(writeOutcome({ wanted: { name: "Goblin", system: { hp: { max: 7, temp: 2 } } } }, {}, after), {
+      changed: ["name", "system.hp.max"],
+      unapplied: ["system.hp.temp"]
+    });
   });
 });

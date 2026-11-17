@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { MethodError, ERROR_CODES as MODULE_ERROR_CODES } from "../module/scripts/errors.mjs";
-import { METHODS as MODULE_METHODS, QUEUE_BUDGET_MS, timing } from "../module/scripts/methods.mjs";
+import { METHODS as MODULE_METHODS, QUEUE_BUDGET_MS } from "../module/scripts/methods.mjs";
 import { SURFACE } from "../module/scripts/surface.mjs";
+import { timing } from "../module/scripts/world.mjs";
 import { ERROR_CODES as PROTOCOL_ERROR_CODES, METHODS as PROTOCOL_METHODS } from "../src/protocol.ts";
 import { TOOLS } from "../src/tools.ts";
 
@@ -17,11 +18,13 @@ describe("method list", () => {
     assert.deepEqual(
       { surface: SURFACE, methods: [...PROTOCOL_METHODS].sort() },
       {
-        surface: 3,
+        surface: 4,
         methods: [
           "create_walls",
+          "delete_actors",
           "delete_tokens",
           "delete_walls",
+          "ensure_actor",
           "ensure_scene",
           "get_actor",
           "get_scene",
@@ -46,8 +49,10 @@ describe("method list", () => {
   it("gives each serialised method a time budget a few seconds below its tool's timeout", () => {
     assert.deepEqual(Object.keys(QUEUE_BUDGET_MS).sort(), [
       "create_walls",
+      "delete_actors",
       "delete_tokens",
       "delete_walls",
+      "ensure_actor",
       "ensure_scene",
       "place_tokens",
       "sync_lights",
@@ -61,6 +66,7 @@ describe("method list", () => {
       );
     }
     assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.ensure_scene);
+    assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.ensure_actor);
     assert.ok(timing.textureLoadMs < TOOLS.get_scene_image.timeoutMs);
   });
 

@@ -1,4 +1,9 @@
+import { pickData } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
+import { resolveFolderPath } from "./folders.mjs";
+import { canonicalNodes, canonicalStyle } from "./html.mjs";
+
+export const timing = { textureLoadMs: 30_000 };
 
 export function resolveScene(sceneId) {
   const scene = sceneId ? game.scenes.get(sceneId) : (canvas.scene ?? game.scenes.active);
@@ -18,10 +23,33 @@ export function sceneFrame(rect) {
   return { width: rect.width, height: rect.height };
 }
 
+function withTimeout(promise, ms, makeError) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(makeError()), Math.max(0, ms));
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+/** foundry.canvas.loadTexture logs a failed load and resolves null (client/canvas/loader.mjs). */
+export function loadTexture(src) {
+  return withTimeout(
+    foundry.canvas.loadTexture(src),
+    timing.textureLoadMs,
+    () =>
+      new MethodError(
+        "foundry_error",
+        `The image ${src} did not load within ${Math.round(timing.textureLoadMs / 1000)} seconds.`
+      )
+  );
+}
+
+/** The cleaning an update gets: with the migrations and the model's own step (client/data/client-backend.mjs:231-235). */
+const AS_AN_UPDATE = Object.freeze({ migrate: true, model: true });
+
 /**
  * The given changes as Foundry would store them on the document. validate with changes is a dry run of the update
  * (common/abstract/data.mjs:575-597). It cleans a copy unless clean.copy is false, and it leaves out the migrate and
- * model steps of the update's own cleaning unless asked for them (client/data/client-backend.mjs:231-235).
+ * model steps of the update's own cleaning unless asked for them.
  * @param {{validate: (options: object) => boolean}} document
  * @param {Record<string, unknown>} given
  * @returns {Record<string, unknown>}
@@ -29,12 +57,94 @@ export function sceneFrame(rect) {
  */
 export function cleanedChanges(document, given) {
   const wanted = structuredClone(given);
-  document.validate({ changes: wanted, clean: { copy: false, migrate: true, model: true } });
+  document.validate({ changes: wanted, clean: { ...AS_AN_UPDATE, copy: false } });
   return wanted;
+}
+
+/**
+ * The same dry run for an update that holds deletion operators. Foundry copies the update itself here, which keeps
+ * them; structuredClone would turn each into an empty object.
+ * @param {{validate: (options: object) => boolean}} document
+ * @param {Record<string, unknown>} update
+ * @throws the error of Foundry's data model, for an update it refuses
+ */
+export function checkUpdate(document, update) {
+  document.validate({ changes: update, clean: AS_AN_UPDATE });
+}
+
+/**
+ * The part of stored data that the document's model would store again, in the stored values. dnd5e deletes a legacy
+ * key on every cleaning, and its vehicle model puts one back as a default (`system.attributes.ac.calc`, dnd5e
+ * module/data/actor/templates/attributes.mjs:185-212, module/data/actor/vehicle.mjs:42-45): such a key is stored, and
+ * refused when it is given back. Without strict the dry run cleans the copy and does not throw for stored data the
+ * model would refuse.
+ * @param {{validate: (options: object) => boolean}} document
+ * @param {Record<string, unknown>} stored a part of the document's `_source`
+ * @returns {Record<string, unknown>}
+ */
+export function storedAgain(document, stored) {
+  const cleaned = structuredClone(stored);
+  document.validate({ changes: cleaned, clean: { ...AS_AN_UPDATE, copy: false }, strict: false });
+  return /** @type {Record<string, unknown>} */ (pickData(stored, cleaned));
+}
+
+/**
+ * The content of an HTML text in a form that does not depend on how it is spelled. A template's content is parsed in
+ * a document of its own, which runs no script and loads no image.
+ * @param {string} html
+ * @returns {string}
+ */
+export function canonicalHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const probe = document.createElement("span");
+  const parse = (declaration) => {
+    probe.style.cssText = declaration;
+    return probe.style.cssText;
+  };
+  return JSON.stringify(canonicalNodes(template.content.childNodes, (style) => canonicalStyle(style, parse)));
 }
 
 export function folderRecords(type) {
   return game.folders
     .filter((folder) => folder.type === type)
     .map((folder) => ({ id: folder.id, name: folder.name, parentId: folder.folder?.id ?? null }));
+}
+
+/**
+ * @param {string} type the document type of the folders, such as "Scene"
+ * @param {readonly string[]} path folder names from the root
+ * @returns {{id: string | null, missing: string[]}} the deepest folder on the path that exists, null for the root, and
+ *   the names below it that do not exist yet
+ */
+export function findFolder(type, path) {
+  const maxDepth = CONST.FOLDER_MAX_DEPTH;
+  if (path.length > maxDepth) {
+    throw new MethodError(
+      "invalid_params",
+      `Foundry allows folders at most ${maxDepth} levels deep, the path has ${path.length}.`
+    );
+  }
+  const { chain, missing, ambiguous } = resolveFolderPath(folderRecords(type), path);
+  if (ambiguous) {
+    throw new MethodError(
+      "invalid_params",
+      `Two ${type.toLowerCase()} folders share the path ${JSON.stringify(ambiguous)}. Rename one.`
+    );
+  }
+  return { id: chain.at(-1)?.id ?? null, missing };
+}
+
+/**
+ * @param {string} type
+ * @param {{id: string | null, missing: string[]}} place as findFolder returns it
+ * @returns {Promise<string | null>} the id of the folder the path ends in
+ */
+export async function createMissingFolders(type, { id, missing }) {
+  let parent = id;
+  for (const name of missing) {
+    const created = await foundry.documents.Folder.create({ name, type, folder: parent });
+    parent = created.id;
+  }
+  return parent;
 }

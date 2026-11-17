@@ -98,7 +98,7 @@ describe("describeField", () => {
       new SchemaField({
         items: new EmbeddedCollectionField({ documentName: "Item" }),
         activities: new ActivitiesField(),
-        system: new TypeDataField(),
+        system: new TypeDataField({ documentName: "Actor" }),
         prototypeToken: new EmbeddedDataField({ name: new StringField() })
       })
     );

@@ -1,6 +1,6 @@
 // @ts-check
 
-import { getPath } from "./paths.mjs";
+import { getPath, setPath } from "./paths.mjs";
 
 /** @typedef {string | {[key: string]: Spec}} Spec */
 
@@ -52,4 +52,28 @@ export function derivedValues(system) {
     derived[table] = Object.fromEntries(Object.entries(entries).map(([key, entry]) => [key, pick(entry, spec) ?? {}]));
   }
   return derived;
+}
+
+/**
+ * What a new actor of a type takes from another given value when the caller leaves it out. dnd5e stores an npc's hit
+ * points apart from their maximum, and a new npc without them has 0 (dnd5e
+ * module/data/actor/templates/attributes.mjs:471-481).
+ * @type {Readonly<Record<string, readonly {path: string, from: string}[]>>}
+ */
+const CREATE_DEFAULTS = Object.freeze({
+  npc: [{ path: "system.attributes.hp.value", from: "system.attributes.hp.max" }]
+});
+
+/**
+ * @param {string} type the actor type
+ * @param {Record<string, any>} data the data given for a new actor
+ * @returns {Record<string, any>} a copy with the defaults of the type filled in
+ */
+export function withCreateDefaults(type, data) {
+  const filled = structuredClone(data);
+  for (const { path, from } of CREATE_DEFAULTS[type] ?? []) {
+    const value = getPath(data, from);
+    if (value !== undefined && getPath(data, path) === undefined) setPath(filled, path, value);
+  }
+  return filled;
 }

@@ -1,19 +1,21 @@
 import { derivedValues } from "./actor-data.mjs";
+import { dropAt } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
+import { fieldProblems } from "./field-check.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { CONFIG_TABLES, configKeys, describeField, selectPath } from "./schema.mjs";
-import { isManaged } from "./scope.mjs";
-import { folderRecords } from "./world.mjs";
+import { FLAG_SCOPE, isManaged } from "./scope.mjs";
+import { folderRecords, storedAgain } from "./world.mjs";
 
 const MAX_ACTORS = 200;
 
 /** Core lists "base" (CONST.BASE_DOCUMENT_TYPE) for every typed document; only some may be created with it (common/abstract/document.mjs:462). */
-function systemTypes(documentName) {
+export function systemTypes(documentName) {
   const { baseTypeAllowed } = CONFIG[documentName].documentClass.metadata;
   return game.documentTypes[documentName].filter((type) => type !== "base" || baseTypeAllowed === true);
 }
 
-function checkType(types, type, noun) {
+export function checkType(types, type, noun) {
   if (!types.includes(type)) {
     throw new MethodError("invalid_params", `Unknown ${noun} "${type}". Use one of: ${types.join(", ")}.`);
   }
@@ -71,6 +73,29 @@ export async function resolveActor(ref) {
   return document;
 }
 
+/** The folder path of a world actor. An actor in a compendium or of a token has none here. */
+export function actorFolderPath(actor) {
+  if (actor.pack || actor.isToken) return [];
+  return folderPath(folderRecords("Actor"), actor.folder?.id ?? null) ?? [];
+}
+
+/**
+ * The stored data of an actor that ensure_actor takes back as it is: without a key the model would not store again,
+ * without a key outside a map's fixed keys, which dnd5e stores and then ignores (one pack actor has
+ * system.skills.value), without the bridge's own flag on the prototype token, which Foundry's Assign Token copies
+ * there from a bridge-made token (client/applications/sheets/token/prototype-config.mjs:278-292), and without the
+ * prototype token of a token's actor, whose data has none.
+ */
+function storedForWrite(actor) {
+  const { system, prototypeToken, ownership } = actor._source;
+  const data = storedAgain(actor, actor.isToken ? { system, ownership } : { system, prototypeToken, ownership });
+  for (const { path, problem } of fieldProblems(CONFIG.Actor.documentClass.schema, data, { type: actor.type })) {
+    if (problem === "key") dropAt(data, path);
+  }
+  dropAt(data, `prototypeToken.flags.${FLAG_SCOPE}`);
+  return data;
+}
+
 export async function getActor({ actor: ref, items = [] }) {
   const actor = await resolveActor(ref);
   const missing = items.filter((id) => !actor.items.has(id));
@@ -80,19 +105,15 @@ export async function getActor({ actor: ref, items = [] }) {
       `${actor.name} has no item with the id ${missing.join(", ")}. The item ids are in this tool's items list.`
     );
   }
-  const inWorld = !actor.pack && !actor.isToken;
-  const { system, prototypeToken, ownership } = actor._source;
   return {
     id: actor.id,
     uuid: actor.uuid,
     name: actor.name,
     type: actor.type,
     img: actor.img,
-    folder: inWorld ? (folderPath(folderRecords("Actor"), actor.folder?.id ?? null) ?? []) : [],
+    folder: actorFolderPath(actor),
     managed: isManaged(actor),
-    system,
-    prototypeToken,
-    ownership,
+    ...storedForWrite(actor),
     derived: derivedValues(actor.system),
     items: actor.items.map((item) => ({ id: item.id, name: item.name, type: item.type, managed: isManaged(item) })),
     itemData: items.map((id) => actor.items.get(id)._source),

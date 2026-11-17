@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { derivedValues } from "../module/scripts/actor-data.mjs";
+import { derivedValues, withCreateDefaults } from "../module/scripts/actor-data.mjs";
 
 describe("derivedValues", () => {
   it("reads the numbers dnd5e derives for a character, and only those", () => {
@@ -43,5 +43,32 @@ describe("derivedValues", () => {
 
   it("gives an ability without its derived numbers an empty entry rather than dropping the key", () => {
     assert.deepEqual(derivedValues({ abilities: { str: { value: 10 } } }), { abilities: { str: {} } });
+  });
+});
+
+describe("withCreateDefaults", () => {
+  it("gives a new npc that has a hit point maximum and no hit points the maximum as its hit points", () => {
+    const data = { name: "Ogre", system: { attributes: { hp: { max: 59 } }, details: { cr: 2 } } };
+    assert.deepEqual(withCreateDefaults("npc", data), {
+      name: "Ogre",
+      system: { attributes: { hp: { max: 59, value: 59 } }, details: { cr: 2 } }
+    });
+    assert.deepEqual(data.system.attributes.hp, { max: 59 }, "the given data is not changed");
+  });
+
+  it("keeps hit points that are given, also 0 and null", () => {
+    for (const value of [0, 12, null]) {
+      const data = { system: { attributes: { hp: { max: 59, value } } } };
+      assert.deepEqual(withCreateDefaults("npc", data), data);
+    }
+  });
+
+  it("adds nothing without a maximum, and nothing for another actor type", () => {
+    const bare = { name: "Ogre", system: { attributes: { hp: { temp: 3 } } } };
+    assert.deepEqual(withCreateDefaults("npc", bare), bare);
+    assert.deepEqual(withCreateDefaults("npc", { name: "Ogre" }), { name: "Ogre" });
+    const vehicle = { system: { attributes: { hp: { max: 40 } } } };
+    assert.deepEqual(withCreateDefaults("vehicle", vehicle), vehicle);
+    assert.deepEqual(withCreateDefaults("character", vehicle), vehicle);
   });
 });

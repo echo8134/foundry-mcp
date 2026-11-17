@@ -1,14 +1,17 @@
 // What Foundry's data model does to given data, for the stand-in fields of fake-system.ts: how it cleans a value before
-// it validates it, and what it then refuses. Written from the behavior measured on the real token model of Foundry
-// 14.370, field kind by field kind.
+// it validates it, and what it then refuses. Written from the behavior measured on the real token and actor models of
+// Foundry 14.370, field kind by field kind.
 
+import { storedHtml } from "./fake-dom.ts";
 import {
   AngleField,
   ArrayField,
   BooleanField,
   ColorField,
   type DataField,
+  DocumentOwnershipField,
   FilePathField,
+  HTMLField,
   NumberField,
   ObjectField,
   SchemaField,
@@ -19,8 +22,19 @@ import {
 const isObject = (value: unknown): value is Record<string, any> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Stands in a cleaned change for Foundry's deletion operator, which `{"-=key": null}` is turned into. */
-export const DELETED = Symbol("deleted");
+/**
+ * Stands in for Foundry's deletion operator (common/data/operators.mjs:81): an update that holds one for a key deletes
+ * that key. Cleaning turns `{"-=key": null}` into one, and the client has one as the global `_del`.
+ */
+export class ForcedDeletion {}
+
+/** A copy that keeps deletion operators, as Foundry's own copy of an update does and structuredClone does not. */
+export function cloneChanges<T>(value: T): T {
+  if (value instanceof ForcedDeletion) return value;
+  if (Array.isArray(value)) return value.map(cloneChanges) as T;
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cloneChanges(v)])) as T;
+  return value;
+}
 
 /** A step of 0.01 keeps two decimals, and so on. */
 function toNearest(value: number, step: number) {
@@ -59,7 +73,7 @@ function expandKeys(data: Record<string, any>) {
   for (const [key, value] of Object.entries(data)) {
     if (key.startsWith("-=") && value === null) {
       delete data[key];
-      data[key.slice(2)] = DELETED;
+      data[key.slice(2)] = new ForcedDeletion();
     } else if (key.includes(".")) {
       delete data[key];
       const parts = key.split(".");
@@ -81,11 +95,12 @@ type CleanOptions = { partial: boolean; source?: unknown };
  * it reads "true", a numeric string becomes its number, a number for a string its text, anything but an object for a
  * schema an empty object. Numbers are rounded to an integer or a step and an angle is brought into 0 to 360, strings
  * are trimmed, an empty one where the field takes none becomes the initial value, and a colour is read as a hex
- * number. A schema drops the keys it does not have. Where the update is partial and the stored data has the object,
- * only the given keys are cleaned; an object that is new, and every array element, gets all its defaults.
+ * number. A schema drops the keys it does not have, and those of fields that are not stored. Where the update is
+ * partial and the stored data has the object, only the given keys are cleaned; an object that is new, and every array
+ * element, gets all its defaults.
  */
 export function cleanValue(field: DataField, value: unknown, { partial, source }: CleanOptions): unknown {
-  if (value === DELETED) return value;
+  if (value instanceof ForcedDeletion) return value;
   if (value === undefined) return initialOf(field);
   if (value === null) return field.nullable === true ? null : initialOf(field);
   if (field instanceof BooleanField) {
@@ -112,7 +127,10 @@ export function cleanValue(field: DataField, value: unknown, { partial, source }
     const all = !partial || !isObject(source);
     for (const key of Object.keys(data)) if (!Object.hasOwn(field.fields, key)) delete data[key];
     for (const [key, child] of Object.entries<DataField>(field.fields)) {
-      if (key in data || all) data[key] = cleanValue(child, data[key], { partial, source: (source as any)?.[key] });
+      if (child.persisted === false) delete data[key];
+      else if (key in data || all) {
+        data[key] = cleanValue(child, data[key], { partial, source: (source as any)?.[key] });
+      }
     }
     return data;
   }
@@ -135,7 +153,7 @@ export function cleanValue(field: DataField, value: unknown, { partial, source }
 /** The complaints Foundry's validation has about cleaned data, each with the path of its field. */
 export function validationErrors(field: DataField, value: unknown, path = ""): string[] {
   const fail = (message: string) => [`${path}: ${message}`];
-  if (value === DELETED) return [];
+  if (value instanceof ForcedDeletion) return [];
   if (value === null) return field.nullable === true ? [] : fail("may not be null");
   if (value === undefined) return [];
   if (field instanceof BooleanField) return typeof value === "boolean" ? [] : fail("must be a boolean");
@@ -165,13 +183,40 @@ export function validationErrors(field: DataField, value: unknown, path = ""): s
     if (!Array.isArray(value)) return fail("must be an Array");
     return value.flatMap((element, index) => validationErrors(field.element, element, `${path}.${index}`));
   }
+  if (field instanceof DocumentOwnershipField) return ownershipErrors(value, path);
   return [];
+}
+
+/**
+ * Each value of an ownership must be a level (common/data/fields.mjs:3919-3923). Foundry checks the values of an
+ * update as they are given, so a deletion operator among them fails too: measured, such an update is not stored.
+ */
+export function ownershipErrors(value: unknown, path = "ownership"): string[] {
+  const levels = isObject(value) ? Object.values(value) : [value];
+  return levels.every((level) => [-1, 0, 1, 2, 3].includes(level as number))
+    ? []
+    : [`${path}: is not a mapping of user IDs and document permission levels`];
+}
+
+/** What the server makes of the HTML fields of data it stores. Client cleaning does not do this. */
+export function sanitizeHtml(field: DataField, value: unknown): unknown {
+  if (field instanceof HTMLField) return typeof value === "string" ? storedHtml(value) : value;
+  if (field instanceof SchemaField && isObject(value)) {
+    for (const [key, child] of Object.entries<DataField>(field.fields)) {
+      if (key in value) value[key] = sanitizeHtml(child, value[key]);
+    }
+  } else if (field instanceof TypedObjectField && isObject(value)) {
+    for (const key of Object.keys(value)) value[key] = sanitizeHtml(field.element, value[key]);
+  } else if (field instanceof ArrayField && Array.isArray(value)) {
+    return value.map((element) => sanitizeHtml(field.element, element));
+  }
+  return value;
 }
 
 /** Merges cleaned changes into stored data as an update does: objects key by key, anything else replaced whole. */
 export function applyChanges(target: Record<string, any>, changes: Record<string, any>) {
   for (const [key, value] of Object.entries(changes)) {
-    if (value === DELETED) delete target[key];
+    if (value instanceof ForcedDeletion) delete target[key];
     else if (isObject(value) && isObject(target[key])) applyChanges(target[key], value);
     else target[key] = isObject(value) ? applyChanges({}, value) : value;
   }

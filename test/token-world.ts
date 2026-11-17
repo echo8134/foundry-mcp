@@ -1,14 +1,14 @@
-// What the tests of the token write tools share: a call through the tool's own input schema, and a small scene.
+// What the tests of the token and actor write tools share: a call through the tool's own input schema, and a small scene.
 
 import assert from "node:assert/strict";
 import { MethodError } from "../module/scripts/errors.mjs";
 import { METHODS } from "../module/scripts/methods.mjs";
+import type { Method } from "../src/protocol.ts";
 import { TOOLS } from "../src/tools.ts";
 import { fakeWorld } from "./fake-world.ts";
 
-type Name = "place_tokens" | "update_tokens" | "delete_tokens" | "get_scene" | "ensure_scene";
-export const viaTool = (name: Name, args: unknown) =>
-  (METHODS as unknown as Record<Name, (params: any) => Promise<any>>)[name](TOOLS[name].input.parse(args));
+export const viaTool = (name: Method, args: unknown) =>
+  (METHODS as unknown as Record<Method, (params: any) => Promise<any>>)[name](TOOLS[name].input.parse(args));
 
 const globals = globalThis as Record<string, unknown>;
 const saved = {
@@ -16,7 +16,9 @@ const saved = {
   canvas: globals.canvas,
   foundry: globals.foundry,
   CONST: globals.CONST,
-  CONFIG: globals.CONFIG
+  CONFIG: globals.CONFIG,
+  _del: globals._del,
+  document: globals.document
 };
 export const restoreGlobals = () => {
   Object.assign(globals, saved);

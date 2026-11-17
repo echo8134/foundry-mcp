@@ -40,3 +40,19 @@ export const sameLevelSet = (a, b, sceneLevelIds) =>
  */
 export const replacedBySync = (document, levels, sceneLevelIds) =>
   isManaged(document) && sameLevelSet(document.levels, levels, sceneLevelIds);
+
+/**
+ * What a lookup by name leads to. A write takes the one document of that name the bridge made. It takes none when
+ * there are several, and none when the only ones of that name were made by hand: a name must never take over a
+ * document someone made in Foundry.
+ * @template {{flags?: any}} T
+ * @param {readonly T[]} named the documents that have the name
+ * @returns {{kind: "one", document: T} | {kind: "several", documents: T[]} | {kind: "handMade", documents: T[]} | {kind: "none"}}
+ */
+export function claimNamed(named) {
+  const managed = named.filter(isManaged);
+  const [document] = managed;
+  if (document !== undefined && managed.length === 1) return { kind: "one", document };
+  if (managed.length > 1) return { kind: "several", documents: managed };
+  return named.length > 0 ? { kind: "handMade", documents: [...named] } : { kind: "none" };
+}

@@ -1,6 +1,7 @@
 import { getActor, getSchema, listActors } from "./actor-methods.mjs";
+import { deleteActors, ensureActor, prepareActorDeletion, prepareEnsureActor } from "./actor-writes.mjs";
 import { MethodError } from "./errors.mjs";
-import { folderPath, folderScope, resolveFolderPath } from "./folders.mjs";
+import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
 import { lightData, lightFields } from "./light-data.mjs";
 import {
@@ -16,7 +17,15 @@ import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet } from "./scope.mjs
 import { storedTokenData, tokenFields } from "./token-data.mjs";
 import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
-import { folderRecords, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
+import {
+  createMissingFolders,
+  findFolder,
+  folderRecords,
+  loadTexture,
+  resolveScene,
+  sceneFrame,
+  sceneRect
+} from "./world.mjs";
 import { createWriteQueue } from "./write-queue.mjs";
 
 const THUMBNAIL_PENDING = "thumbnailPending";
@@ -29,30 +38,10 @@ export const QUEUE_BUDGET_MS = {
   ensure_scene: 85_000,
   place_tokens: 25_000,
   update_tokens: 25_000,
-  delete_tokens: 25_000
+  delete_tokens: 25_000,
+  ensure_actor: 85_000,
+  delete_actors: 25_000
 };
-
-export const timing = { textureLoadMs: 30_000 };
-
-function withTimeout(promise, ms, makeError) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(makeError()), Math.max(0, ms));
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
-  });
-}
-
-/** foundry.canvas.loadTexture logs a failed load and resolves null (client/canvas/loader.mjs). */
-function loadBackground(src) {
-  return withTimeout(
-    foundry.canvas.loadTexture(src),
-    timing.textureLoadMs,
-    () =>
-      new MethodError(
-        "foundry_error",
-        `The image ${src} did not load within ${Math.round(timing.textureLoadMs / 1000)} seconds.`
-      )
-  );
-}
 
 function scenePath(scene, folders) {
   return folderPath(folders, scene.folder?.id ?? null) ?? [];
@@ -138,7 +127,7 @@ async function getSceneImage({
 
   const src = scene.initialLevel?.background?.src ?? null;
   // Scene#createThumbnail draws no mesh for a texture that did not load (client/documents/scene.mjs).
-  if (src && !(await loadBackground(src))) {
+  if (src && !(await loadTexture(src))) {
     throw new MethodError("foundry_error", `The scene's background image ${src} could not be loaded.`);
   }
 
@@ -379,20 +368,14 @@ async function checkEnsureSceneInput(input) {
       `This Foundry module does not know the ensure_scene field${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}. The Foundry tab probably still runs an older module than the server: reload Foundry (F5) and call again.`
     );
   }
-  const maxDepth = CONST.FOLDER_MAX_DEPTH;
-  if (folder && folder.length > maxDepth) {
-    throw new MethodError(
-      "invalid_params",
-      `Foundry allows folders at most ${maxDepth} levels deep, the path has ${folder.length}.`
-    );
-  }
+  if (folder) findFolder("Scene", folder);
   if (weather && !Object.hasOwn(CONFIG.weatherEffects, weather)) {
     throw new MethodError(
       "invalid_params",
       `Unknown weather "${weather}". Use one of: ${Object.keys(CONFIG.weatherEffects).join(", ")}, or "" for none.`
     );
   }
-  if (background && !(await loadBackground(background.src))) {
+  if (background && !(await loadTexture(background.src))) {
     throw new MethodError("invalid_params", `The background image ${background.src} could not be loaded.`);
   }
   return input;
@@ -428,20 +411,11 @@ function checkInsideCanvas(existing, changes) {
   if (messages.length > 0) throw new MethodError("invalid_params", `Nothing was changed. ${messages.join(" ")}`);
 }
 
-async function createMissingFolders(parentId, names) {
-  let id = parentId;
-  for (const name of names) {
-    const created = await foundry.documents.Folder.create({ name, type: "Scene", folder: id });
-    id = created.id;
-  }
-  return id;
-}
-
 /** Foundry renders a thumbnail itself only in Scene#_preCreate with a background, never on update (client/documents/scene.mjs). */
 async function refreshThumbnail(scene) {
   const src = scene.initialLevel?.background?.src;
   if (!src) return;
-  if (!(await loadBackground(src))) {
+  if (!(await loadTexture(src))) {
     throw new MethodError(
       "foundry_error",
       `The scene was saved but its background image ${src} could not be loaded, so no thumbnail was rendered. Run the call again once the image loads.`
@@ -460,17 +434,8 @@ async function refreshThumbnail(scene) {
 }
 
 async function ensureScene(input) {
-  const folders = folderRecords("Scene");
-  const wanted = input.folder ?? [];
-  const resolved = resolveFolderPath(folders, wanted);
-  if (resolved.ambiguous) {
-    throw new MethodError(
-      "invalid_params",
-      `Two scene folders share the path ${JSON.stringify(resolved.ambiguous)}. Rename one.`
-    );
-  }
-  const lookupFolderId = resolved.missing.length === 0 ? (resolved.chain.at(-1)?.id ?? null) : undefined;
-  const existing = findSceneToEnsure(input, lookupFolderId);
+  const place = findFolder("Scene", input.folder ?? []);
+  const existing = findSceneToEnsure(input, place.missing.length === 0 ? place.id : undefined);
   if (!existing && (input.width === undefined || input.height === undefined)) {
     throw new MethodError("invalid_params", "Creating a scene needs width and height.");
   }
@@ -481,10 +446,7 @@ async function ensureScene(input) {
   const geometry = planSceneChanges({ ...input, folder: undefined }, current);
   if (touchesGeometry(geometry.changed)) checkInsideCanvas(existing, geometry.scene);
 
-  const folderId =
-    input.folder === undefined
-      ? undefined
-      : await createMissingFolders(resolved.chain.at(-1)?.id ?? null, resolved.missing);
+  const folderId = input.folder === undefined ? undefined : await createMissingFolders("Scene", place);
   const wantedFields = { ...input, folder: folderId };
   const plan = planSceneChanges(wantedFields, current);
   // Set in the same write as the change, so a crash or a failed render leaves the marker for the next run.
@@ -545,5 +507,7 @@ export const METHODS = Object.freeze({
   get_schema: getSchema,
   place_tokens: serialised("place_tokens", preparePlacement, placeTokens),
   update_tokens: serialised("update_tokens", prepareUpdate, updateTokens),
-  delete_tokens: serialised("delete_tokens", onScene(), deleteTokens)
+  delete_tokens: serialised("delete_tokens", onScene(), deleteTokens),
+  ensure_actor: serialised("ensure_actor", prepareEnsureActor, ensureActor),
+  delete_actors: serialised("delete_actors", prepareActorDeletion, deleteActors)
 });

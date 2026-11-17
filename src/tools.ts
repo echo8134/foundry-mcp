@@ -225,6 +225,9 @@ const TOKEN_ENTRY =
   "field that takes none, a rotation below 0 or of 360 or more, a colour not given as #rrggbb), named with what it " +
   "would store. An object without keys (light: {}) asks for nothing and changes nothing; these tools remove no key.";
 
+// The module checks what these hold against the live data models, which the server cannot know.
+const storedData = (what: string) => z.record(z.string(), z.unknown()).optional().describe(what);
+
 const imageResultSchema = z.object({
   mimeType: z.string(),
   data: z.string(),
@@ -519,7 +522,9 @@ const SPECS: Record<Method, ToolSpec> = {
   get_actor: defineTool({
     description:
       "Read one actor. system, prototypeToken, ownership and itemData are stored data, with the field names and " +
-      "codes dnd5e stores (get_schema lists them), so a value can be changed and passed back. derived holds the numbers " +
+      "codes dnd5e stores (get_schema lists them), so a value can be changed and passed back to ensure_actor. system, " +
+      "prototypeToken and ownership leave out a stored key that ensure_actor would refuse, such as a vehicle's " +
+      "legacy ac.calc; a token's actor has no prototypeToken. derived holds the numbers " +
       "the sheet shows, most of them computed by dnd5e and not stored: ac, hp, prof, xp, level, init, spell {dc, attack}, abilities {mod, save} and skills " +
       "{total, passive}, whatever the actor type has. items and effects are short lists; pass item ids as items to get " +
       "their full stored data in itemData. tokens are the placed tokens of the actor. actor is a world actor id or a " +
@@ -596,6 +601,88 @@ const SPECS: Record<Method, ToolSpec> = {
       "the count and the scene." +
       SAFER_SCENE_ID,
     input: z.object({ sceneId, ids: tokenIds.min(1).describe("Token ids to delete.") })
+  }),
+  ensure_actor: defineTool({
+    ifOutcomeUnknown:
+      " The call may still have been applied in Foundry. Find the actor with list_actors before retrying, " +
+      "or run the same call again once writes are accepted: it changes only what still differs.",
+    timeoutMs: 90_000,
+    description:
+      "Create an actor, or bring an existing one to the given data, changing only what differs: running it again " +
+      "with the same input changes nothing. Without actor, the target is the bridge-made world actor of exactly that " +
+      "name in exactly that folder (the root if omitted): one is updated, none is created (then give type or from), " +
+      "several are refused, and so is a name that only an actor made by hand has, with its id to pass as actor on " +
+      "purpose. With actor that actor is changed, hand-made or not: name is its new name and folder the folder to " +
+      "move it into. Missing folders are created. The actor of a token (its UUID) takes no folder and no " +
+      "prototypeToken, and a compendium actor is not written. from copies an actor with its items and effects when " +
+      "the actor is created, and is not applied again on a later run. system, prototypeToken, ownership and flags " +
+      "are stored data in the shape get_actor returns and get_schema lists: objects merge into what is stored, lists " +
+      "are replaced whole, and data read with get_actor and passed back unchanged writes nothing. remove deletes entries " +
+      "by dot path: an entry of a keyed map (system.tools.thief) or a key below flags; a path with no entry is " +
+      "ignored, an entry of a map with fixed keys goes back to its defaults (system.abilities.str to 10), and on a " +
+      "token's actor only what that token changed can be removed. " +
+      'In dnd5e a fixed armor class is system.attributes.ac.calcs ["natural"] with ac.flat, speeds are ' +
+      "formula texts under system.attributes.movement.speeds, a skill's value is its proficiency multiplier (0, 0.5, " +
+      "1, 2), system.details.cr is a number (0.125, 0.25 and 0.5 for the fractions), a new npc given hp.max without " +
+      "hp.value starts with value equal to max, and a token's sight range follows the actor's senses " +
+      "(system.attributes.senses.ranges) while the senseVisionSync setting is on. A request that cannot be built is " +
+      "refused before anything is written: an unknown or derived field, a key outside a map's fixed keys, " +
+      "flags.foundry-mcp, data the actor model refuses, a value Foundry would store as something else (named with " +
+      "what it would store), an img that does not load. Returns {id, uuid, name, type, folder, created, changed (the " +
+      "field paths whose stored value changed or was removed), unapplied (the field paths whose stored value is not " +
+      "the one asked for; a hook or the system can put a path in both), derived (the numbers get_actor returns under " +
+      "that name, read after the write)}.",
+    input: z
+      .strictObject({
+        actor: nonBlank
+          .optional()
+          .describe(
+            "The actor to change: a world actor id or UUID, or the UUID of a token's own actor, " +
+              "Scene.<id>.Token.<id>.Actor.<id>. Omit to find the actor by name."
+          ),
+        name: nonBlank.optional().describe("Actor name, trimmed. Required without actor."),
+        type: nonBlank
+          .optional()
+          .describe("Actor type of the system, for example npc. Needed to create, unless from is given."),
+        folder: folderPath
+          .optional()
+          .describe("Folder path from the root. With actor, the folder to move the actor into. [] is the root."),
+        from: nonBlank
+          .optional()
+          .describe(
+            "UUID of a compendium actor, or id or UUID of a world actor, to copy when the actor is created. The " +
+              "copy keeps the source's prototype token, name included: give prototypeToken.name to name its tokens " +
+              "like the copy."
+          ),
+        img: nonBlank.nullable().optional().describe("Portrait image, a path or URL Foundry can load. null is none."),
+        system: storedData("Stored dnd5e data of the actor type."),
+        prototypeToken: storedData("Stored prototype token data, which place_tokens starts each token from."),
+        ownership: storedData(
+          "Level by user id, and default: -1 inherit, 0 none, 1 limited, 2 observer, 3 owner. To drop a user's " +
+            "entry give -1: remove does not work here."
+        ),
+        flags: storedData("Flags by scope. flags.foundry-mcp is the bridge's own."),
+        remove: z
+          .array(nonBlank)
+          .optional()
+          .describe('Dot paths of entries to delete, for example ["system.tools.thief", "flags.world.note"].')
+      })
+      .refine((args) => args.actor !== undefined || args.name !== undefined, {
+        message: "Give a name, or an actor to change."
+      })
+  }),
+  delete_actors: defineTool({
+    ifOutcomeUnknown: " The call may still have been applied in Foundry. Check with list_actors before retrying.",
+    description:
+      "Delete world actors by id; ids that are no world actor are ignored. Foundry cannot bring a deleted actor " +
+      "back, so an actor this bridge did not make (managed: false in list_actors) is deleted only with handMade: " +
+      "true: without it the whole call is refused, names those actors and deletes nothing. An actor that still has " +
+      "tokens on a scene is not deleted either: the whole call is refused and names the scenes, so delete the tokens " +
+      "first with delete_tokens. Returns deleted, and the ids and names of the actors that were deleted.",
+    input: z.strictObject({
+      ids: z.array(z.string().min(1)).min(1).describe("World actor ids to delete."),
+      handMade: z.literal(true).optional().describe("Also delete actors this bridge did not make.")
+    })
   })
 };
 

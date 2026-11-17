@@ -162,7 +162,7 @@ describe("get_actor", () => {
       img: "goblin.webp",
       folder: ["Monsters"],
       managed: true,
-      system: { attributes: { hp: { value: 7, max: 7 }, ac: { flat: 15, calc: "flat" } }, details: { cr: 0.25 } },
+      system: { attributes: { hp: { value: 7, max: 7 }, ac: { flat: 15 } }, details: { cr: 0.25 } },
       prototypeToken: { name: "Goblin", actorLink: false },
       ownership: { default: 0 },
       derived: {
@@ -183,6 +183,23 @@ describe("get_actor", () => {
         { sceneId: other.id, sceneName: "Road", tokenId: unlinked.id, name: "Goblin" }
       ]
     });
+  });
+
+  it("leaves out a stored key the model would not store again, and returns the other values as they are stored", async () => {
+    const airship = world.addActor({
+      name: "Airship",
+      type: "vehicle",
+      system: { attributes: { hp: { value: 300, max: 300 }, ac: { flat: 13, override: null, calc: "flat" } } }
+    });
+    const result = await viaTool("get_actor", { actor: airship.id });
+    assert.deepEqual(result.system, { attributes: { hp: { value: 300, max: 300 }, ac: { flat: 13, override: null } } });
+    assert.deepEqual(airship._source.system.attributes.ac, { flat: 13, override: null, calc: "flat" });
+  });
+
+  it("reads an actor whose stored data the model would refuse, as it is stored", async () => {
+    const broken = world.addActor({ name: "Broken", type: "npc", system: { details: { cr: "high" } } });
+    const result = await viaTool("get_actor", { actor: broken.id });
+    assert.deepEqual(result.system, { details: { cr: "high" } });
   });
 
   it("returns the full stored data of the items asked for, and refuses an id the actor does not have", async () => {
@@ -288,17 +305,27 @@ describe("get_schema", () => {
       "prototypeToken",
       "items",
       "effects",
-      "folder"
+      "folder",
+      "ownership",
+      "flags",
+      "_stats"
     ]);
     assert.deepEqual(
-      [fields.items, fields.effects, fields.folder],
-      ["collection of Item", "collection of ActiveEffect", "id of Folder, nullable"]
+      [fields.items, fields.effects, fields.folder, fields.ownership, fields.flags],
+      ["collection of Item", "collection of ActiveEffect", "id of Folder, nullable", "object", { $map: "object" }]
     );
-    assert.deepEqual(fields.prototypeToken, { name: 'string, default ""', actorLink: "boolean, default false" });
+    assert.deepEqual(fields.prototypeToken, {
+      name: 'string, default ""',
+      actorLink: "boolean, default false",
+      flags: { $map: "object" }
+    });
     assert.deepEqual(fields.system.abilities, { $map: { value: "integer, min 0, default 10" }, $keys: ["str", "dex"] });
     assert.deepEqual(fields.system.details, {}, "a character's level is derived, not stored");
     const npc = await viaTool("get_schema", { document: "Actor", type: "npc" });
-    assert.deepEqual(npc.fields.system.details, { cr: "number, min 0, nullable, default 1" });
+    assert.deepEqual(npc.fields.system.details, {
+      cr: "number, min 0, nullable, default 1",
+      biography: { value: 'html, default ""', public: 'html, default ""' }
+    });
   });
 
   it("returns the tree of an item type, an activity type and the token", async () => {
@@ -343,8 +370,8 @@ describe("get_schema", () => {
     const leaf = await viaTool("get_schema", { document: "Actor", type: "npc", path: "system.abilities.str.value" });
     assert.equal(leaf.fields, "integer, min 0, default 10");
     await assert.rejects(
-      viaTool("get_schema", { document: "Actor", type: "npc", path: "system.attributes.ac" }),
-      refused("not_found", /system\.attributes\.ac in the npc Actor/)
+      viaTool("get_schema", { document: "Actor", type: "npc", path: "system.attributes.spellcasting" }),
+      refused("not_found", /system\.attributes\.spellcasting in the npc Actor/)
     );
   });
 

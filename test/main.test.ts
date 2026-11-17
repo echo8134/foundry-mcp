@@ -64,8 +64,10 @@ describe("main.ts", () => {
     const tools = messages.find((m) => m.id === 2)?.result?.tools as { name: string }[];
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "create_walls",
+      "delete_actors",
       "delete_tokens",
       "delete_walls",
+      "ensure_actor",
       "ensure_scene",
       "get_actor",
       "get_scene",

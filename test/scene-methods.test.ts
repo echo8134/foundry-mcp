@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { MethodError } from "../module/scripts/errors.mjs";
-import { METHODS, QUEUE_BUDGET_MS, timing } from "../module/scripts/methods.mjs";
+import { METHODS, QUEUE_BUDGET_MS } from "../module/scripts/methods.mjs";
+import { timing } from "../module/scripts/world.mjs";
 import { TOOLS } from "../src/tools.ts";
 import { fakeWorld } from "./fake-world.ts";
 

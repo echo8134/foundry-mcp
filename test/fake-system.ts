@@ -24,7 +24,19 @@ export class ForeignDocumentField extends DocumentIdField {
 }
 export class DocumentUUIDField extends StringField {}
 export class ObjectField extends DataField {}
-export class TypeDataField extends ObjectField {}
+/** Foundry's TypeDataField: the data model of the document type, from CONFIG (common/data/fields.mjs:4385-4388). */
+export class TypeDataField extends ObjectField {
+  constructor(document: { documentName: string }, options: Record<string, any> = {}) {
+    super(options);
+    this.document = document;
+  }
+  getModelForType(type: string) {
+    const config = (globalThis as Record<string, any>).CONFIG;
+    return config?.[this.document.documentName]?.dataModels?.[type] ?? null;
+  }
+}
+/** A user's level by user id, and the default (common/data/fields.mjs:3896-3925). */
+export class DocumentOwnershipField extends ObjectField {}
 export class SchemaField extends DataField {
   constructor(fields: Record<string, DataField>, options: Record<string, any> = {}) {
     super(options);
@@ -136,25 +148,67 @@ export function systemConfig() {
       initialKeys: { str: {}, dex: {} }
     }
   );
+  const flat = () => new NumberField({ integer: true, min: 0, nullable: true, initial: null });
+  // The fields of dnd5e's creature data that the write tests use, with the kinds dnd5e gives them (dnd5e
+  // module/data/actor/templates/attributes.mjs, creature.mjs, module/data/shared/senses-field.mjs, movement-field.mjs).
   const creature = (details: Record<string, DataField>) =>
-    new SchemaField({ abilities, attributes: new SchemaField({ hp }), details: new SchemaField(details) });
+    new SchemaField({
+      abilities,
+      attributes: new SchemaField({
+        hp,
+        ac: new SchemaField({
+          flat: flat(),
+          calcs: new SetField(new StringField(), { initial: () => ["unarmored", "armored"] }),
+          value: new NumberField({ integer: true, persisted: false })
+        }),
+        senses: new SchemaField({
+          ranges: new MappingField(new NumberField({ min: 0, nullable: true, initial: null }), {
+            initialKeys: ["darkvision", "blindsight"],
+            initialKeysOnly: true
+          })
+        }),
+        movement: new SchemaField({
+          speeds: new MappingField(new FormulaField({ deterministic: true }), {
+            initialKeys: ["walk", "fly"],
+            initialKeysOnly: true
+          })
+        })
+      }),
+      details: new SchemaField(details),
+      skills: new MappingField(new SchemaField({ value: new NumberField({ min: 0, max: 2, initial: 0 }) }), {
+        initialKeys: ["acr", "prc", "ste"],
+        initialKeysOnly: true
+      }),
+      tools: new MappingField(
+        new SchemaField({
+          value: new NumberField({ min: 0, max: 2, initial: 1 }),
+          ability: new StringField({ initial: "int" })
+        })
+      )
+    });
+  const biography = () =>
+    new SchemaField({ value: new HTMLField({ initial: "" }), public: new HTMLField({ initial: "" }) });
   const actorSchema = new SchemaField({
     _id: new DocumentIdField({ nullable: true }),
     name: new StringField({ initial: "" }),
     type: new StringField(),
     img: new FilePathField({ nullable: true, initial: null }),
-    system: new TypeDataField(),
+    system: new TypeDataField(document("Actor")),
     prototypeToken: new EmbeddedDataField({
       name: new StringField({ initial: "" }),
-      actorLink: new BooleanField({ initial: false })
+      actorLink: new BooleanField({ initial: false }),
+      flags: new DocumentFlagsField()
     }),
     items: new EmbeddedCollectionField(Item),
     effects: new EmbeddedCollectionField(ActiveEffect),
-    folder: new ForeignDocumentField(document("Folder"), { nullable: true })
+    folder: new ForeignDocumentField(document("Folder"), { nullable: true }),
+    ownership: new DocumentOwnershipField({ initial: () => ({ default: 0 }) }),
+    flags: new DocumentFlagsField(),
+    _stats: new ObjectField()
   });
   const itemSchema = new SchemaField({
     name: new StringField({ initial: "" }),
-    system: new TypeDataField(),
+    system: new TypeDataField(Item),
     effects: new EmbeddedCollectionField(ActiveEffect)
   });
   return {
@@ -164,8 +218,27 @@ export function systemConfig() {
         character: {
           schema: creature({ level: new NumberField({ integer: true, min: 0, initial: 1, persisted: false }) })
         },
-        npc: { schema: creature({ cr: new NumberField({ min: 0, nullable: true, initial: 1 }) }) },
-        vehicle: { schema: new SchemaField({ attributes: new SchemaField({ hp }) }) },
+        npc: {
+          schema: creature({ cr: new NumberField({ min: 0, nullable: true, initial: 1 }), biography: biography() })
+        },
+        vehicle: {
+          schema: new SchemaField({
+            attributes: new SchemaField({
+              hp,
+              ac: new SchemaField({ flat: flat(), override: flat(), calc: new StringField({ initial: "flat" }) })
+            })
+          }),
+          // dnd5e turns the legacy `ac.calc` into the current fields on every cleaning and deletes it, and its vehicle
+          // model then fills it in again as an initial value: measured, a vehicle's stored `calc: "flat"` given back
+          // is not stored, and makes `override` the flat value (dnd5e module/data/actor/templates/attributes.mjs:185-212,
+          // module/data/actor/vehicle.mjs:42-45).
+          migrate(system: Record<string, any>) {
+            const ac = system.attributes?.ac;
+            if (!ac?.calc) return;
+            if (ac.calc === "flat") ac.override = ac.flat;
+            delete ac.calc;
+          }
+        },
         group: {
           schema: new SchemaField({ members: new ArrayField(new SchemaField({ quantity: new NumberField() })) })
         }
@@ -186,7 +259,7 @@ export function systemConfig() {
     },
     ActiveEffect: {
       documentClass: {
-        schema: new SchemaField({ name: new StringField(), system: new TypeDataField() }),
+        schema: new SchemaField({ name: new StringField(), system: new TypeDataField(ActiveEffect) }),
         metadata: { baseTypeAllowed: true }
       },
       dataModels: {

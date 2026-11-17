@@ -5,9 +5,18 @@
 //   stored  the document's `_source`, before and after the write
 // A write is refused when cleaning would turn a given value into another one (recastLeaves), sends the part of wanted
 // that differs from stored (diffData), and reports what changed in storage (changedPaths) and what is still not as
-// wanted (diffData again).
+// wanted (diffData again). updateFor and writeOutcome put these together with the entries a caller asks to remove.
 
 /** @typedef {{path: string, given: unknown, kept: unknown}} Recast a given value, and what Foundry would store for it */
+/**
+ * @typedef {(path: string, wanted: unknown, stored: unknown) => boolean} SameLeaf whether two values that are not equal
+ *   say the same, such as two spellings of one HTML content
+ */
+/**
+ * @typedef {{wanted: Record<string, unknown>, remove?: readonly string[], same?: SameLeaf}} Asked what a write is to
+ *   bring about: the wanted data, the dot paths of the entries to remove, and the leaves that may say the same in other
+ *   words
+ */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 export const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -41,29 +50,49 @@ const isBranch = (value) => isPlainObject(value) && Object.keys(value).length > 
 /** @param {Record<string, unknown>} object @returns {[string, unknown][]} the entries that hold a value */
 const entries = (object) => Object.entries(object).filter(([, value]) => value !== undefined);
 
+/** @type {SameLeaf} */
+const never = () => false;
+
 /**
- * Exact. A key that holds undefined counts as absent: Foundry's cleaning leaves such a key for a field without an
- * initial value, and JSON drops it.
+ * Exact, but for the values `same` takes as one. A key that holds undefined counts as absent: Foundry's cleaning
+ * leaves such a key for a field without an initial value, and JSON drops it.
  * @param {unknown} a
  * @param {unknown} b
+ * @param {string} path where the two values lie, for `same`
+ * @param {SameLeaf} same
  * @returns {boolean}
  */
-export function sameData(a, b) {
+function sameAt(a, b, path, same) {
   if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => sameData(x, b[i]));
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => sameAt(x, b[i], join(path, i), same));
+  }
   if (isPlainObject(a) && isPlainObject(b)) {
     const left = entries(a);
-    return left.length === entries(b).length && left.every(([key, value]) => sameData(value, own(b, key)));
+    return (
+      left.length === entries(b).length &&
+      left.every(([key, value]) => sameAt(value, own(b, key), join(path, key), same))
+    );
   }
-  return false;
+  return same(path, a, b);
 }
+
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean} whether the two are equal in depth
+ */
+export const sameData = (a, b) => sameAt(a, b, "", never);
 
 /**
  * An object without keys asks for an object and says nothing about what is in it.
  * @param {unknown} wanted
  * @param {unknown} stored
+ * @param {string} path
+ * @param {SameLeaf} same
  */
-const sameLeaf = (wanted, stored) => (isPlainObject(wanted) ? isPlainObject(stored) : sameData(wanted, stored));
+const sameLeaf = (wanted, stored, path, same) =>
+  isPlainObject(wanted) ? isPlainObject(stored) : sameAt(wanted, stored, path, same);
 
 /** @param {string} text */
 const tidy = (text) => text.trim().toLowerCase();
@@ -130,10 +159,11 @@ export function explainRecasts(recasts) {
  * Compares wanted data with stored data by leaf path. Keys that `stored` has and `wanted` lacks are not compared.
  * @param {Record<string, unknown>} wanted
  * @param {unknown} stored
+ * @param {SameLeaf} [same] takes two values that are not equal as one, also inside an array
  * @returns {{paths: string[], changes: Record<string, unknown>}} the dot paths of the leaves that differ, and the part of
  *   `wanted` that holds exactly those leaves
  */
-export function diffData(wanted, stored) {
+export function diffData(wanted, stored, same = never) {
   /** @type {string[]} */
   const paths = [];
   /**
@@ -150,7 +180,7 @@ export function diffData(wanted, stored) {
       if (isBranch(value)) {
         const nested = walk(value, own(have, key), path);
         if (Object.keys(nested).length > 0) put(changes, key, nested);
-      } else if (!sameLeaf(value, own(have, key))) {
+      } else if (!sameLeaf(value, own(have, key), path, same)) {
         paths.push(path);
         put(changes, key, value);
       }
@@ -198,4 +228,111 @@ export function changedPaths(wanted, before, after) {
   };
   walk(wanted, before, after, "");
   return paths;
+}
+
+/**
+ * Follows a dot path through own keys, as far as there are objects to look into.
+ * @param {unknown} data
+ * @param {string} path
+ * @returns {{value: unknown, reached: boolean}} the value the way ended on, and whether that was the end of the path
+ */
+function follow(data, path) {
+  let value = data;
+  for (const key of path.split(".")) {
+    if (!isPlainObject(value)) return { value, reached: false };
+    value = own(value, key);
+  }
+  return { value, reached: true };
+}
+
+/**
+ * @param {unknown} data
+ * @param {string} path a dot path
+ * @returns {boolean} whether the data holds a value at the path
+ */
+export function hasPath(data, path) {
+  const { value, reached } = follow(data, path);
+  return reached && value !== undefined;
+}
+
+/**
+ * @param {unknown} data
+ * @param {string} path a dot path
+ * @returns {boolean} whether the data gives a value at the path, or one on the way to it that is no object to look into
+ */
+export const givesValueOn = (data, path) => follow(data, path).value !== undefined;
+
+/**
+ * @param {readonly string[]} paths dot paths of entries to remove
+ * @param {unknown} stored
+ * @returns {string[]} the paths the stored data has an entry at, without those that lie inside another of them
+ */
+export function entriesToRemove(paths, stored) {
+  const present = [...new Set(paths)].filter((path) => hasPath(stored, path));
+  return present.filter((path) => !present.some((outer) => path.startsWith(`${outer}.`)));
+}
+
+/**
+ * @param {Record<string, unknown>} data
+ * @param {string} path a dot path, whose objects on the way are created where the data has none
+ * @param {unknown} value
+ */
+export function putAt(data, path, value) {
+  const keys = path.split(".");
+  const last = /** @type {string} */ (keys.pop());
+  let node = data;
+  for (const key of keys) {
+    const next = own(node, key);
+    if (isPlainObject(next)) {
+      node = next;
+    } else {
+      /** @type {Record<string, unknown>} */
+      const made = {};
+      put(node, key, made);
+      node = made;
+    }
+  }
+  put(node, last, value);
+}
+
+/**
+ * @param {Record<string, unknown>} data
+ * @param {string} path a dot path whose key is deleted from the data, when it is there
+ */
+export function dropAt(data, path) {
+  const cut = path.lastIndexOf(".");
+  const { value: parent, reached } = cut < 0 ? { value: data, reached: true } : follow(data, path.slice(0, cut));
+  if (reached && isPlainObject(parent)) delete parent[path.slice(cut + 1)];
+}
+
+/**
+ * @param {Asked} asked
+ * @param {unknown} stored
+ * @param {unknown} deletion the value that makes Foundry delete a key when an update holds it
+ * @returns {{update: Record<string, unknown>, writes: boolean}} the update that brings the stored data to what is asked,
+ *   and whether it holds anything
+ */
+export function updateFor({ wanted, remove = [], same }, stored, deletion) {
+  const { paths, changes } = diffData(wanted, stored, same);
+  const removing = entriesToRemove(remove, stored);
+  for (const path of removing) putAt(changes, path, deletion);
+  return { update: changes, writes: paths.length + removing.length > 0 };
+}
+
+/**
+ * @param {Asked} asked
+ * @param {unknown} before the stored data before the write, a copy
+ * @param {unknown} after the stored data after it
+ * @returns {{changed: string[], unapplied: string[]}} the paths whose stored value is another one, or gone, after the
+ *   write, and the paths that are still not as asked. A path can be in both.
+ */
+export function writeOutcome({ wanted, remove = [], same }, before, after) {
+  const asked = [...new Set(remove)];
+  return {
+    changed: [
+      ...changedPaths(wanted, before, after),
+      ...asked.filter((path) => hasPath(before, path) && !hasPath(after, path))
+    ],
+    unapplied: [...diffData(wanted, after, same).paths, ...asked.filter((path) => hasPath(after, path))]
+  };
 }

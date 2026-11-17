@@ -28,13 +28,15 @@ async function connect(answer: (call: Call) => unknown | Promise<unknown>) {
 const text = (result: unknown) => (result as { content: { text: string }[] }).content[0]!.text;
 
 describe("MCP tools", () => {
-  it("lists exactly the fourteen tools with model-facing descriptions", async () => {
+  it("lists exactly the sixteen tools with model-facing descriptions", async () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "create_walls",
+      "delete_actors",
       "delete_tokens",
       "delete_walls",
+      "ensure_actor",
       "ensure_scene",
       "get_actor",
       "get_scene",
@@ -484,6 +486,139 @@ describe("MCP tools", () => {
       assert.equal(result.isError, true);
       assert.match(text(result), message);
       assert.equal(calls.length, 0);
+    });
+  }
+
+  it("sends ensure_actor and delete_actors to the bridge unchanged, the first with the long timeout", async () => {
+    const { client, calls } = await connect(() => ({}));
+    const ensure = {
+      name: "Bandit",
+      type: "npc",
+      folder: ["Monsters"],
+      from: "Compendium.dnd5e.actors24.Actor.abc",
+      img: "art/bandit.webp",
+      system: { attributes: { hp: { max: 11 } }, anything: { the: ["module", "checks"] } },
+      prototypeToken: { name: "Bandit" },
+      ownership: { default: 0 },
+      flags: { world: { note: "x" } },
+      remove: ["system.tools.thief"]
+    };
+    const remove = { ids: ["a1", "a2"], handMade: true };
+    assert.notEqual((await client.callTool({ name: "ensure_actor", arguments: ensure })).isError, true);
+    assert.notEqual(
+      (await client.callTool({ name: "ensure_actor", arguments: { actor: "a1", img: null } })).isError,
+      true
+    );
+    assert.notEqual((await client.callTool({ name: "delete_actors", arguments: remove })).isError, true);
+    assert.deepEqual(
+      calls.map((call) => [call.method, call.params, call.timeoutMs]),
+      [
+        ["ensure_actor", ensure, 90_000],
+        ["ensure_actor", { actor: "a1", img: null }, 90_000],
+        ["delete_actors", remove, 30_000]
+      ]
+    );
+  });
+
+  it("trims an actor's name and the names of its folder path before they reach the bridge", async () => {
+    const { client, calls } = await connect(() => ({}));
+    await client.callTool({
+      name: "ensure_actor",
+      arguments: { name: "  Bandit ", type: "npc", folder: [" Monsters "] }
+    });
+    assert.deepEqual(calls[0]!.params, { name: "Bandit", type: "npc", folder: ["Monsters"] });
+  });
+
+  for (const [label, name, args, message] of [
+    [
+      "ensure_actor without a name and without an actor",
+      "ensure_actor",
+      { type: "npc" },
+      /Give a name, or an actor to change/
+    ],
+    [
+      "ensure_actor with an input it does not have, such as items",
+      "ensure_actor",
+      { name: "Bandit", type: "npc", items: [{ name: "Sword", type: "weapon" }] },
+      /Unrecognized key: "items"/
+    ],
+    [
+      "ensure_actor with system data that is no object",
+      "ensure_actor",
+      { name: "Bandit", system: "strong" },
+      /expected record.* at system$/
+    ],
+    ["ensure_actor with a blank name", "ensure_actor", { name: "  " }, /at name$/],
+    ["delete_actors without ids", "delete_actors", { ids: [] }, />=1 items at ids$/],
+    [
+      "delete_actors with handMade false",
+      "delete_actors",
+      { ids: ["a1"], handMade: false },
+      /expected true at handMade$/
+    ],
+    [
+      "delete_actors with an input it does not have",
+      "delete_actors",
+      { ids: ["a1"], all: true },
+      /Unrecognized key: "all"/
+    ]
+  ] as const) {
+    it(`refuses ${label} before any request is sent`, async () => {
+      const { client, calls } = await connect(() => ({}));
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+      assert.match(text(result), message);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  it("tells a caller of ensure_actor how the actor is found, what the data is, and what dnd5e stores", async () => {
+    const { client } = await connect(() => ({}));
+    const { tools } = await client.listTools();
+    const description = (name: string) => tools.find((t) => t.name === name)!.description ?? "";
+    const ensure = description("ensure_actor");
+    assert.match(ensure, /bridge-made world actor of exactly that name in exactly that folder/);
+    assert.match(ensure, /a name that only an actor made by hand has, with its id to pass as actor on purpose/);
+    assert.match(ensure, /stored data in the shape get_actor returns and get_schema lists/);
+    assert.match(ensure, /objects merge into what is stored, lists are replaced whole/);
+    assert.match(ensure, /data read with get_actor and passed back unchanged writes nothing/);
+    assert.match(description("get_actor"), /leave out a stored key that ensure_actor would refuse/);
+    assert.match(description("get_actor"), /a token's actor has no prototypeToken/);
+    assert.match(ensure, /remove deletes entries by dot path/);
+    assert.match(
+      ensure,
+      /an entry of a map with fixed keys goes back to its defaults \(system\.abilities\.str to 10\)/
+    );
+    assert.match(ensure, /on a token's actor only what that token changed can be removed/);
+    assert.match(ensure, /from copies an actor with its items and effects when the actor is created/);
+    assert.match(ensure, /a new npc given hp\.max without hp\.value starts with value equal to max/);
+    assert.match(ensure, /system\.attributes\.ac\.calcs \["natural"\] with ac\.flat/);
+    assert.match(
+      ensure,
+      /sight range follows the actor's senses \(system\.attributes\.senses\.ranges\) while the senseVisionSync/
+    );
+    assert.match(ensure, /changed .*unapplied .*derived/);
+    assert.doesNotMatch(ensure, /null deletes/);
+    assert.match(description("delete_actors"), /handMade: true/);
+    assert.match(description("delete_actors"), /still has tokens on a scene/);
+    const shape = (TOOLS.ensure_actor.input as any).shape;
+    assert.match(shape.ownership.description, /-1 inherit, 0 none, 1 limited, 2 observer, 3 owner/);
+  });
+
+  for (const tool of ["ensure_actor", "delete_actors"] as const) {
+    it(`a timeout on ${tool} warns that it may have been applied, and says how to go on`, async () => {
+      const { client } = await connect(() => {
+        throw new BridgeError("timeout", "Foundry did not answer.");
+      });
+      const args = { ensure_actor: { name: "Bandit", type: "npc" }, delete_actors: { ids: ["a1"] } }[tool];
+      const result = await client.callTool({ name: tool, arguments: args });
+      assert.match(text(result), /may still have been applied in Foundry/);
+      assert.match(
+        text(result),
+        tool === "ensure_actor"
+          ? /list_actors before retrying, or run the same call again/
+          : /list_actors before retrying/
+      );
     });
   }
 

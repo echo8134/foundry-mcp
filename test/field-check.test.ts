@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { explainFieldProblems, fieldProblems } from "../module/scripts/field-check.mjs";
 import {
+  explainFieldProblems,
+  explainRemovalProblems,
+  fieldProblems,
+  removalProblems,
+  sameHtml
+} from "../module/scripts/field-check.mjs";
+import {
+  ActivitiesField,
   AdvancementDataField,
   ArrayField,
   BooleanField,
   DataField,
   DocumentFlagsField,
+  DocumentOwnershipField,
   EmbeddedCollectionField,
+  EmbeddedDataField,
+  HTMLField,
   MappingField,
   NumberField,
   ObjectField,
@@ -290,5 +300,176 @@ describe("explainFieldProblems", () => {
         "Cannot be checked here: system.activities.x. What such an entry holds depends on its type, and this call has no data model for it. Leave it out of this call. " +
         "system.activities.y: give its type, which picks the data model to check it against."
     );
+  });
+});
+
+describe("sameHtml", () => {
+  const withHtml = new SchemaField({
+    name: new StringField(),
+    bio: new HTMLField(),
+    notes: new TypedObjectField(new SchemaField({ text: new HTMLField(), title: new StringField() })),
+    pages: new ArrayField(new SchemaField({ body: new HTMLField() })),
+    system: new TypeDataField()
+  });
+  // Stands in for the parsed form: two spellings of one content differ in case and in spaces only.
+  const canonical = (html: string) => html.toLowerCase().replace(/\s+/g, "");
+  const data = {
+    name: "Goblin",
+    bio: "<p>a</p>",
+    notes: { one: { text: "<p>b</p>", title: "T" } },
+    pages: [{ body: "<p>c</p>" }]
+  };
+  const same = sameHtml(withHtml, data, canonical, { type: "npc" });
+
+  it("takes two texts of an HTML field as one when their canonical forms are equal", () => {
+    assert.equal(same("bio", "<P>a</P>", "<p> a </p>"), true);
+    assert.equal(same("bio", "<p>a</p>", "<p>b</p>"), false);
+  });
+
+  it("finds the HTML fields below a keyed map and inside a list, by the path the data has them at", () => {
+    assert.equal(same("notes.one.text", "<P>b</P>", "<p>b</p>"), true);
+    assert.equal(same("pages.0.body", "<P>c</P>", "<p>c</p>"), true);
+    assert.equal(same("pages.1.body", "<P>c</P>", "<p>c</p>"), false, "the data has no second page");
+  });
+
+  it("compares no other field that way, and no value that is not a text", () => {
+    assert.equal(same("name", "GOBLIN", "goblin"), false);
+    assert.equal(same("notes.one.title", "T", "t"), false);
+    assert.equal(same("bio", null, "<p>a</p>"), false);
+    assert.equal(same("bio", "<p>a</p>", undefined), false);
+  });
+
+  it("follows the system data of the document type", () => {
+    class BiographyData extends TypeDataField {
+      override getModelForType() {
+        return { schema: new SchemaField({ details: new SchemaField({ biography: new HTMLField() }) }) };
+      }
+    }
+    const typedHtml = new SchemaField({ system: new BiographyData() });
+    const typedSame = sameHtml(typedHtml, { system: { details: { biography: "<p>x</p>" } } }, canonical, {
+      type: "npc"
+    });
+    assert.equal(typedSame("system.details.biography", "<P>x</P>", "<p>x</p>"), true);
+    assert.throws(() => sameHtml(typedHtml, { system: { details: {} } }, canonical), TypeError);
+  });
+});
+
+describe("removalProblems", () => {
+  const actor = new SchemaField({
+    name: new StringField(),
+    system: new TypeDataField(),
+    prototypeToken: new EmbeddedDataField({
+      detection: new TypedObjectField(new SchemaField({ range: new NumberField() }))
+    }),
+    ownership: new DocumentOwnershipField(),
+    flags: new DocumentFlagsField(),
+    items: new EmbeddedCollectionField({ documentName: "Item" }),
+    tools: new MappingField(new SchemaField({ value: new NumberField(), bonus: new StringField() })),
+    abilities: new MappingField(new SchemaField({ value: new NumberField() }), {
+      initialKeys: ["str", "dex"],
+      initialKeysOnly: true
+    }),
+    tags: new SetField(new StringField()),
+    members: new ArrayField(new SchemaField({ notes: new TypedObjectField(new StringField()) })),
+    derived: new TypedObjectField(new NumberField(), { persisted: false }),
+    activities: new ActivitiesField(),
+    shape: new TypedSchemaField({ circle: new SchemaField({ type: new StringField() }) })
+  });
+  const problems = (paths: string[], type: string | undefined = "npc") => removalProblems(actor, paths, { type });
+
+  it("takes the path of an entry of a keyed map, also one that keeps only its initial keys", () => {
+    assert.deepEqual(
+      problems(["tools.thief", "abilities.str", "abilities.stray", "prototypeToken.detection.seeAll"]),
+      []
+    );
+    assert.deepEqual(problems(["activities.bite"]), []);
+  });
+
+  it("takes a key at any depth below a free-form object, and a whole flags scope", () => {
+    assert.deepEqual(
+      problems(["flags.world", "flags.world.note", "flags.world.deep.deeper.key", "ownership.user1"]),
+      []
+    );
+  });
+
+  it("refuses a path that names a field, a part of an entry, or something inside a list", () => {
+    const paths = [
+      "name",
+      "flags",
+      "tools",
+      "system",
+      "tools.thief.value",
+      "tags.0",
+      "members.0.notes.x",
+      "items.abc",
+      "name.deeper",
+      "activities.bite.name",
+      "shape.type"
+    ];
+    assert.deepEqual(
+      problems(paths),
+      paths.map((path) => ({ path, problem: "field" }))
+    );
+  });
+
+  it("refuses a path the schema does not have, and one into a field that is not stored", () => {
+    assert.deepEqual(problems(["tols.thief", "prototypeToken.detections.x", "derived.x", "system.skills.x"]), [
+      { path: "tols.thief", problem: "unknown" },
+      { path: "prototypeToken.detections.x", problem: "unknown" },
+      { path: "derived.x", problem: "unknown" },
+      { path: "system.skills.x", problem: "unknown" }
+    ]);
+  });
+
+  it("follows the system data of the document type, and needs the type for it", () => {
+    class ToolData extends TypeDataField {
+      override getModelForType(type: string) {
+        const tools = new MappingField(new SchemaField({ value: new NumberField() }));
+        return type === "npc" ? { schema: new SchemaField({ tools, cr: new NumberField() }) } : null;
+      }
+    }
+    const typed = new SchemaField({ system: new ToolData() });
+    assert.deepEqual(removalProblems(typed, ["system.tools.thief"], { type: "npc" }), []);
+    assert.deepEqual(removalProblems(typed, ["system.cr", "system.tols.x"], { type: "npc" }), [
+      { path: "system.cr", problem: "field" },
+      { path: "system.tols.x", problem: "unknown" }
+    ]);
+    assert.deepEqual(removalProblems(typed, ["system.tools.thief"], { type: "ghost" }), [
+      { path: "system.tools.thief", problem: "unknown" }
+    ]);
+    assert.throws(() => removalProblems(typed, ["system.tools.thief"]), TypeError);
+  });
+
+  it("refuses a path with an empty key or one Foundry reads as an instruction", () => {
+    const paths = [
+      "flags.world.-=note",
+      "flags.==world",
+      "flags.world.__proto__",
+      "tools..x",
+      ".tools",
+      "flags.constructor.x"
+    ];
+    assert.deepEqual(
+      problems(paths),
+      paths.map((path) => ({ path, problem: "reserved" }))
+    );
+  });
+});
+
+describe("explainRemovalProblems", () => {
+  it("says what is unknown, what cannot be removed and what to do instead, and what is no plain key", () => {
+    const text = explainRemovalProblems([
+      { path: "tols.thief", problem: "unknown" },
+      { path: "name", problem: "field" },
+      { path: "tags.0", problem: "field" },
+      { path: "flags.-=x", problem: "reserved" }
+    ]);
+    assert.match(text, /^Not a path of plain keys: flags\.-=x\. /);
+    assert.match(text, / No such field: tols\.thief\. /);
+    assert.match(
+      text,
+      / Not an entry that can be removed: name, tags\.0\. remove takes the path of one entry of a keyed map/
+    );
+    assert.match(text, /give it another value instead, and give a list whole to drop an element of it\.$/);
   });
 });

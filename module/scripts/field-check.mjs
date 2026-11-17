@@ -1,7 +1,7 @@
 // @ts-check
-// Checks given data against a data schema by walking both side by side. Reads the same public field shape as
-// schema.mjs: the class names, `fields`, `element`, `types`, `persisted`, `initialKeys`, `initialKeysOnly` and
-// `getModelForType`.
+// Reads given data, and the paths of entries to remove, against a data schema by walking both side by side. Reads the
+// same public field shape as schema.mjs: the class names, `fields`, `element`, `types`, `persisted`, `initialKeys`,
+// `initialKeysOnly` and `getModelForType`.
 
 import { isPlainObject } from "./data-diff.mjs";
 import { classChain, initialKeys } from "./schema.mjs";
@@ -21,23 +21,32 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   against, or nothing when the entry names no type it knows. It gets the field too, because the class name alone
  *   does not tell the fields apart: dnd5e's activities and advancements are both maps of TypeDataField5e.
  */
-/** @typedef {{type?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[]}} Walk */
+/**
+ * @typedef {{type?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[], html: Set<string>}} Walk
+ *   `html` collects the paths of the leaves that lie on an HTMLField
+ */
+/** @typedef {{path: string, problem: "unknown" | "field" | "reserved"}} RemovalProblem */
 
 /** @param {string} path @param {string | number} key */
 const join = (path, key) => (path ? `${path}.${key}` : String(key));
 
 /**
- * Keys Foundry does not store as they are. Cleaning expands a key with a dot into nested objects
- * (common/data/fields.mjs:1162-1165), reads a leading `-=` as a deletion and `==` as a replacement (:1113-1140,
- * :2189-2206), and rebuilds an operator from an object that has the key `__$OPERATOR$__` (:1175-1184). Foundry's own
- * setProperty skips the last three (common/utils/helpers.mjs:842).
+ * Keys Foundry reads as an instruction: a leading `-=` as a deletion and `==` as a replacement
+ * (common/data/fields.mjs:1113-1140, :2189-2206), and an object that has the key `__$OPERATOR$__` as an operator to
+ * rebuild (:1175-1184). Foundry's own setProperty skips the last three (common/utils/helpers.mjs:842).
  * @param {string} key
  */
-const isReservedKey = (key) =>
-  key.includes(".") ||
+const isInstructionKey = (key) =>
   key.startsWith("-=") ||
   key.startsWith("==") ||
   ["__$OPERATOR$__", "__proto__", "constructor", "prototype"].includes(key);
+
+/**
+ * Keys Foundry does not store as they are: the ones it reads as an instruction, and a key with a dot, which cleaning
+ * expands into nested objects (common/data/fields.mjs:1162-1165).
+ * @param {string} key
+ */
+const isReservedKey = (key) => key.includes(".") || isInstructionKey(key);
 
 /**
  * Looks at every key of the data, whatever field it lies below: a free-form object such as flags takes a reserved key
@@ -114,6 +123,9 @@ const STRUCTURES = Object.freeze({
       walk.problems.push({ path, problem: "model", type: walk.type });
     }
   },
+  HTMLField: (_field, _value, path, walk) => {
+    walk.html.add(path);
+  },
   // dnd5e picks the data model of each activity or advancement with a function the field was built with (dnd5e
   // module/data/fields/type-data-field.mjs), which this walk does not call: the caller passes the schemas in schemaFor.
   TypeDataField5e: (field, value, path, walk) => {
@@ -154,10 +166,31 @@ export function fieldProblems(schema, data, { type, schemaFor = {} } = {}) {
   const { fields = {} } = /** @type {{fields?: Record<string, unknown>}} */ (schema);
   if (type === undefined && Object.values(fields).some(isTypeData)) throw new TypeError(NEEDS_TYPE);
   /** @type {Walk} */
-  const walk = { type, schemaFor, problems: [] };
+  const walk = { type, schemaFor, problems: [], html: new Set() };
   findReservedKeys(data, "", walk.problems);
   check(schema, data, "", walk);
   return walk.problems;
+}
+
+/**
+ * Which leaves hold HTML is read from the schema. Two texts of such a leaf say the same when their canonical forms are
+ * equal: the Foundry server rewrites HTML when it stores it, so the stored text is seldom the given one.
+ * @param {object} schema a SchemaField
+ * @param {Record<string, unknown>} data the data whose HTML leaves are compared
+ * @param {(html: string) => string} canonical the content of an HTML text in a form that does not depend on how it is
+ *   spelled
+ * @param {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>}} [options] as for fieldProblems
+ * @returns {import("./data-diff.mjs").SameLeaf}
+ */
+export function sameHtml(schema, data, canonical, { type, schemaFor = {} } = {}) {
+  /** @type {Walk} */
+  const walk = { type, schemaFor, problems: [], html: new Set() };
+  check(schema, data, "", walk);
+  return (path, wanted, stored) =>
+    walk.html.has(path) &&
+    typeof wanted === "string" &&
+    typeof stored === "string" &&
+    canonical(wanted) === canonical(stored);
 }
 
 /**
@@ -200,6 +233,95 @@ export function explainFieldProblems(problems) {
           : `${problem.path}: the type ${problem.type} has no data model to check it against.`
       );
     }
+  }
+  return sentences.join(" ");
+}
+
+/** @typedef {{names: RemovalProblem["problem"] | "entry", next?: unknown}} PathStep */
+
+/** @type {(field: any, key: string) => PathStep} */
+const insideAField = () => ({ names: "field" });
+
+/**
+ * By class name, as STRUCTURES: what a path names when it ends on a key below the field, and the field it goes on in.
+ * Without one, a path that goes on names what the step says. An entry is what can be removed: a key of a keyed map, or
+ * a key at any depth below a free-form object such as a flags scope. Below a field of any other class there is none.
+ */
+const PATH_STEPS = Object.freeze(
+  /** @type {Record<string, (field: any, key: string) => PathStep>} */ ({
+    SchemaField: (field, key) => {
+      const inner = Object.hasOwn(field.fields ?? {}, key) ? field.fields[key] : undefined;
+      return inner && inner.persisted !== false ? { names: "field", next: inner } : { names: "unknown" };
+    },
+    TypedObjectField: (field) => ({ names: "entry", next: field.element }),
+    // An ObjectField by its class, but what it holds follows a data model that this walk does not have.
+    TypeDataField5e: insideAField,
+    ObjectField: () => ({ names: "entry" })
+  })
+);
+
+/**
+ * @param {object} schema a SchemaField
+ * @param {string[]} keys
+ * @param {string | undefined} type
+ * @returns {PathStep["names"]}
+ */
+function pathNames(schema, keys, type) {
+  /** @type {unknown} */
+  let field = schema;
+  /** @type {PathStep["names"]} */
+  let names = "field";
+  for (const key of keys) {
+    if (isTypeData(field)) {
+      if (type === undefined) throw new TypeError(NEEDS_TYPE);
+      field = /** @type {any} */ (field).getModelForType?.(type)?.schema;
+    }
+    if (field === null || typeof field !== "object") return "unknown";
+    const name = classChain(field).find((className) => Object.hasOwn(PATH_STEPS, className));
+    const step = (PATH_STEPS[name ?? ""] ?? insideAField)(field, key);
+    if (step.next === undefined) return step.names;
+    names = step.names;
+    field = step.next;
+  }
+  return names;
+}
+
+/**
+ * A path to remove must name an entry of a keyed map, or a key below a free-form object, and each of its keys must be
+ * a plain one.
+ * @param {object} schema a SchemaField
+ * @param {readonly string[]} paths dot paths
+ * @param {{type?: string}} [options] `type` is the document type, as for fieldProblems
+ * @returns {RemovalProblem[]}
+ * @throws {TypeError} when a path leads into a TypeDataField and no type is given
+ */
+export function removalProblems(schema, paths, { type } = {}) {
+  return paths.flatMap((path) => {
+    const keys = path.split(".");
+    if (keys.some((key) => key === "" || isInstructionKey(key))) return [{ path, problem: "reserved" }];
+    const names = pathNames(schema, keys, type);
+    return names === "entry" ? [] : [{ path, problem: names }];
+  });
+}
+
+/**
+ * @param {RemovalProblem[]} problems
+ * @returns {string} one sentence per kind of problem
+ */
+export function explainRemovalProblems(problems) {
+  const paths = (/** @type {RemovalProblem["problem"]} */ kind) =>
+    problems.filter((problem) => problem.problem === kind).map((problem) => problem.path);
+  const sentences = [];
+  if (paths("reserved").length > 0) {
+    sentences.push(
+      `Not a path of plain keys: ${paths("reserved").join(", ")}. A key may not be empty, nor one Foundry reads as an instruction (a leading -= or ==, __$OPERATOR$__) or a part of every object (__proto__, constructor, prototype).`
+    );
+  }
+  if (paths("unknown").length > 0) sentences.push(`No such field: ${paths("unknown").join(", ")}.`);
+  if (paths("field").length > 0) {
+    sentences.push(
+      `Not an entry that can be removed: ${paths("field").join(", ")}. remove takes the path of one entry of a keyed map, such as system.tools.thief, or of a key below a free-form object such as flags.world. A field keeps its place: give it another value instead, and give a list whole to drop an element of it.`
+    );
   }
   return sentences.join(" ");
 }
