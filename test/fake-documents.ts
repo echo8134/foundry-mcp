@@ -504,6 +504,21 @@ function mergeInto(target: Source, picked: Source) {
 }
 
 /**
+ * Stands in for RegionDocument#polygons (client/documents/region.mjs:50-61), the outlines of a region's area that
+ * Foundry works out of its shapes, a hole being an outline inside another. The fake gives each shape its own outline,
+ * and knows a polygon and a rectangle that is not turned.
+ */
+function outlineOf(shape: Source): { points: number[] } {
+  if (shape.type === "polygon") return { points: [...shape.points] };
+  if (shape.type !== "rectangle" || shape.rotation !== 0)
+    throw new Error(`The fake draws no outline of ${shape.type}.`);
+  const left = shape.x - shape.anchorX * shape.width;
+  const top = shape.y - shape.anchorY * shape.height;
+  const [right, bottom] = [left + shape.width, top + shape.height];
+  return { points: [left, top, right, top, right, bottom, left, bottom] };
+}
+
+/**
  * The UUID a relative one names (common/utils/helpers.mjs:1386-1451), for world documents: each dot after the first
  * goes up one document, and what follows names a document below that one, or beside it when it begins with an id.
  */
@@ -784,6 +799,13 @@ export function fakeDocuments(env: Env) {
       Object.defineProperty(FakeDocument.prototype, field, {
         get(this: FakeDocument) {
           return this.getEmbeddedCollection(child);
+        }
+      });
+    }
+    if (name === "Region") {
+      Object.defineProperty(FakeDocument.prototype, "polygons", {
+        get(this: FakeDocument) {
+          return this._source.shapes.map(outlineOf);
         }
       });
     }

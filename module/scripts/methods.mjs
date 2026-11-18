@@ -23,9 +23,9 @@ import {
   touchesThumbnail,
   unknownSceneFields
 } from "./scene-data.mjs";
-import { drawLights, drawTokens, drawWalls } from "./scene-drawing.mjs";
+import { drawLights, drawRegions, drawTokens, drawWalls } from "./scene-drawing.mjs";
 import { getSchema } from "./schema-methods.mjs";
-import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet } from "./scope.mjs";
+import { FLAG_SCOPE, isManaged, isOnLevel, replacedBySync, sameLevelSet } from "./scope.mjs";
 import { storedTokenData, tokenFields } from "./token-data.mjs";
 import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
@@ -128,28 +128,49 @@ function loadImage(src) {
   });
 }
 
+/**
+ * Without a level the scene is rendered as Scene#createThumbnail renders it by itself, on its initial level. With one,
+ * that call draws the level's background and foreground as the canvas places them, and those of the levels shown
+ * with it (client/documents/scene.mjs:1706-1779, Scene#_configureLevelTextures at :921-941).
+ */
 async function getSceneImage({
   sceneId,
   maxSize = DEFAULT_MAX_SIZE,
+  level: levelId,
   showWalls = false,
   showLights = false,
-  showTokens = false
+  showTokens = false,
+  showRegions = false
 }) {
   const scene = resolveScene(sceneId);
+  if (levelId !== undefined) checkLevels(scene, [levelId]);
+  const level = levelId === undefined ? scene.initialLevel : scene.levels.get(levelId);
   const rect = sceneRect(scene);
   const scale = Math.min(1, maxSize / Math.max(rect.width, rect.height));
   const width = Math.max(1, Math.round(rect.width * scale));
   const height = Math.max(1, Math.round(rect.height * scale));
 
-  const src = scene.initialLevel?.background?.src ?? null;
+  const src = level?.background?.src ?? null;
+  const images = [
+    ["background", src],
+    ...(levelId === undefined ? [] : [["foreground", level.foreground?.src ?? null]])
+  ];
   // Scene#createThumbnail draws no mesh for a texture that did not load (client/documents/scene.mjs).
-  if (src && !(await loadTexture(src))) {
-    throw new MethodError("foundry_error", `The scene's background image ${src} could not be loaded.`);
+  for (const [which, image] of images) {
+    if (image && !(await loadTexture(image))) {
+      throw new MethodError("foundry_error", `The scene's ${which} image ${image} could not be loaded.`);
+    }
   }
 
   let thumb;
   try {
-    ({ thumb } = await scene.createThumbnail({ width, height, format: "image/webp", quality: 0.9 }));
+    ({ thumb } = await scene.createThumbnail({
+      ...(levelId !== undefined && { level: levelId }),
+      width,
+      height,
+      format: "image/webp",
+      quality: 0.9
+    }));
   } catch (error) {
     throw new MethodError("foundry_error", `Foundry could not render the scene: ${error.message}`);
   }
@@ -158,12 +179,17 @@ async function getSceneImage({
   surface.width = width;
   surface.height = height;
   const context = surface.getContext("2d");
-  context.fillStyle = scene.initialLevel?.background?.color ?? "#999999";
+  context.fillStyle = level?.background?.color ?? "#999999";
   context.fillRect(0, 0, width, height);
   context.drawImage(await loadImage(thumb), 0, 0, width, height);
-  if (showWalls) drawWalls(context, scene, rect, width, height);
-  if (showLights) drawLights(context, scene, rect, width, height);
-  if (showTokens) drawTokens(context, scene, rect, width, height);
+  const view = { rect, grid: scene.grid, width, height };
+  const onLevel = (placed) => levelId === undefined || isOnLevel(placed, levelId);
+  // A token is on the one level it names (TokenDocument#locatedInLevel, client/documents/token.mjs:413-417).
+  const tokenOnLevel = (token) => levelId === undefined || token.level === levelId;
+  if (showRegions) drawRegions(context, scene.regions.filter(onLevel), view);
+  if (showWalls) drawWalls(context, scene.walls.filter(onLevel), view);
+  if (showLights) drawLights(context, scene.lights.filter(onLevel), view);
+  if (showTokens) drawTokens(context, scene.tokens.filter(tokenOnLevel), view);
 
   const dataUrl = surface.toDataURL("image/webp", 0.9);
   const [, mimeType, data] = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl) ?? [];

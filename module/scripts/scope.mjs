@@ -22,6 +22,17 @@ export function restrictingLevels(levels, sceneLevelIds) {
   return all.length > 0 && all.every((id) => set.has(id)) ? new Set() : set;
 }
 
+/**
+ * Whether a wall, a light or a region is on a level: one that names no levels is on every level
+ * (CanvasDocument#includedInLevel, client/documents/abstract/canvas-document.mjs:97-105).
+ * @param {{levels?: Iterable<string>}} document
+ * @param {string} levelId
+ */
+export function isOnLevel(document, levelId) {
+  const levels = [...(document.levels ?? [])];
+  return levels.length === 0 || levels.includes(levelId);
+}
+
 /** @param {{flags?: any}} document */
 export const isManaged = (document) => document.flags?.[FLAG_SCOPE]?.managed === true;
 

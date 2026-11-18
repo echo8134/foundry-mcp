@@ -320,13 +320,29 @@ const SPECS: Record<Method, ToolSpec> = {
       "draw the existing walls over the image (walls in red, doors in blue) to check your work. Set showLights to " +
       "draw every ambient light, hand-placed and bridge-made: a dot at its position and a ring at its reach " +
       "(yellow, or purple for a darkness source). Set showTokens to draw every token as an ellipse over its footprint, " +
-      "outlined by disposition (green friendly, white neutral, orange hostile, cyan secret) and left unfilled when hidden.",
+      "outlined by disposition (green friendly, white neutral, orange hostile, cyan secret) and left unfilled when hidden. " +
+      "Set showRegions to draw every region in its own colour: its area filled lightly, with a hole left open, a dashed " +
+      "outline, and its name in the middle. Without level the image shows the scene's initial level and the walls, " +
+      "lights, tokens and regions of every level. With level, a level id from get_scene, it shows that level as " +
+      "Foundry shows it: the level's background and foreground images, placed and scaled by the level's textures, " +
+      "over the level's background colour, and the images of the levels it shows with it (visibility.levels). Then " +
+      "showWalls, showLights and showRegions draw only what is on that level, which includes what names no levels " +
+      "and so is on all of them, and showTokens only the tokens whose level it is. `background` then says whether " +
+      "that level has a background image. A level id the scene lacks is refused.",
     input: z.object({
       sceneId,
       maxSize: z.number().int().min(64).max(4096).optional().describe("Longest image side in pixels. Default 1568."),
+      level: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Id of the level to render, from get_scene. Default: the scene's initial level, with every level's walls, lights, tokens and regions."
+        ),
       showWalls: z.boolean().optional().describe("Draw the scene's walls over the image. Default false."),
       showLights: z.boolean().optional().describe("Draw the scene's ambient lights over the image. Default false."),
-      showTokens: z.boolean().optional().describe("Draw the scene's tokens over the image. Default false.")
+      showTokens: z.boolean().optional().describe("Draw the scene's tokens over the image. Default false."),
+      showRegions: z.boolean().optional().describe("Draw the scene's regions over the image. Default false.")
     }),
     timeoutMs: 90_000,
     toResult: (raw) => {

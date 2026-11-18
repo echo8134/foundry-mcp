@@ -546,6 +546,20 @@ describe("MCP tools", () => {
     assert.deepEqual(calls[0]!.params, { showLights: true });
   });
 
+  it("sends the level and showRegions to the bridge for get_scene_image, and refuses an empty level id", async () => {
+    const { client, calls } = await connect(() => ({
+      mimeType: "image/webp",
+      data: "AAAA",
+      frame: { width: 1, height: 1 },
+      background: true
+    }));
+    await client.callTool({ name: "get_scene_image", arguments: { level: "lvlTower", showRegions: true } });
+    assert.deepEqual(calls[0]!.params, { level: "lvlTower", showRegions: true });
+    const refused = await client.callTool({ name: "get_scene_image", arguments: { level: "" } });
+    assert.equal(refused.isError, true);
+    assert.equal(calls.length, 1);
+  });
+
   it("describes what sync_lights promises about repeating it, and that radii are not pixels", async () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
