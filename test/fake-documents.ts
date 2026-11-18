@@ -57,6 +57,7 @@ export type DocumentWrite = {
   parent: string | null;
   pack: string | null;
   data: any[];
+  keepId?: true;
 };
 
 type Env = {
@@ -519,6 +520,30 @@ function outlineOf(shape: Source): { points: number[] } {
 }
 
 /**
+ * buildRelativeUuid (common/utils/helpers.mjs:1474-1507) for world documents: the way from the origin up to the
+ * document both lie in, a dot for each step, and down to the target. The document type of the target is left out
+ * where it is the one of the document the way last left.
+ */
+function relativeUuid(target: string, origin: string): string {
+  const parts = origin.split(".");
+  let prefix = origin;
+  let left: string | undefined;
+  for (let ups = 0; ; ups++) {
+    if (target === prefix) return ".".repeat(ups + 1);
+    if (target.startsWith(`${prefix}.`)) {
+      const rest = target.slice(prefix.length);
+      return left && rest.startsWith(`.${left}.`)
+        ? ".".repeat(ups - 1) + rest.slice(left.length + 1)
+        : ".".repeat(ups) + rest;
+    }
+    left = parts.at(-2)!;
+    parts.length -= 2;
+    if (parts.length === 0) return target.startsWith(`${left}.`) ? ".".repeat(ups) + target.slice(left.length) : target;
+    prefix = parts.join(".");
+  }
+}
+
+/**
  * The UUID a relative one names (common/utils/helpers.mjs:1386-1451), for world documents: each dot after the first
  * goes up one document, and what follows names a document below that one, or beside it when it begins with an id.
  */
@@ -534,6 +559,27 @@ export function absoluteUuid(uuid: string, relative: any): string | null {
   return document.parent
     ? `${document.parent.uuid}.${document.documentName}.${rest}`
     : `${document.documentName}.${rest}`;
+}
+
+/**
+ * DocumentUUIDField#_cleanType (common/data/fields.mjs:3530-3539): where the field asks for it, an absolute UUID
+ * becomes one relative to the document it is cleaned for. A document that is not stored yet has no UUID to be
+ * relative to, and keeps the UUID as given.
+ */
+function relativized(field: DataField, value: unknown, origin: string | null): unknown {
+  if (origin === null) return value;
+  if (field instanceof DocumentUUIDField) {
+    const absolute = field.relative && field.relativize && typeof value === "string" && !value.startsWith(".");
+    return absolute ? relativeUuid(value as string, origin) : value;
+  }
+  if (field instanceof SchemaField && isObject(value)) {
+    for (const [key, child] of Object.entries<DataField>(field.fields)) {
+      if (key in value) value[key] = relativized(child, value[key], origin);
+    }
+  } else if (field instanceof ArrayField && Array.isArray(value)) {
+    return value.map((element) => relativized(field.element, element, origin));
+  }
+  return value;
 }
 
 export function fakeDocuments(env: Env) {
@@ -686,6 +732,7 @@ export function fakeDocuments(env: Env) {
           partial: true,
           source: this._source
         }) as Source;
+        relativized(fieldsOfType, cleaned, this.id ? this.uuid : null);
         const errors = validationErrors(fieldsOfType, applyChanges(structuredClone(this._source), cleaned));
         if (errors.length > 0 && strict) throw new Error(`${name} validation errors: ${errors.join("; ")}`);
         return errors.length === 0;
@@ -710,6 +757,7 @@ export function fakeDocuments(env: Env) {
           partial: true,
           source: this._source
         }) as Source;
+        relativized(fieldsOfType, cleaned, this.uuid);
         if (control.vetoDocumentUpdate?.(name, cleaned)) return undefined;
         control.filterDocumentChanges?.(name, cleaned);
         const errors = validationErrors(fieldsOfType, applyChanges(structuredClone(this._source), cleaned));
@@ -728,9 +776,13 @@ export function fakeDocuments(env: Env) {
       /**
        * Document.create with one document (common/abstract/document.mjs:732-737). It resolves to nothing, without an
        * error, for data the model refuses and for a creation a hook refuses (client/data/client-backend.mjs:91-108). The
-       * server gives the document its id, and keeps the ids of the embedded documents created with it.
+       * server gives the document its id, or with keepId keeps the one it is given (common/abstract/_types.mjs:120),
+       * and keeps the ids of the embedded documents created with it.
        */
-      static async create(data: Source, { parent = null, pack = null }: { parent?: any; pack?: string | null } = {}) {
+      static async create(
+        data: Source,
+        { parent = null, pack = null, keepId = false }: { parent?: any; pack?: string | null; keepId?: boolean } = {}
+      ) {
         await env.delay();
         const inPack: string | null = parent?.pack ?? pack;
         assertUnlocked(inPack, "create");
@@ -739,7 +791,8 @@ export function fakeDocuments(env: Env) {
           document: name,
           parent: parent?.uuid ?? null,
           pack: inPack,
-          data: [structuredClone(data)]
+          data: [structuredClone(data)],
+          ...(keepId && { keepId: true })
         });
         const failure = control.documentError?.("create", name, data);
         if (failure) throw new Error(failure);
@@ -754,7 +807,7 @@ export function fakeDocuments(env: Env) {
           log.notifications.push(`${name} creation prevented`);
           return undefined;
         }
-        source._id = newId(name);
+        source._id = (keepId && source._id) || newId(name);
         control.filterDocumentData?.(name, source);
         storedOnServer(definition, source);
         return store(name, source, parent, inPack);
@@ -806,6 +859,14 @@ export function fakeDocuments(env: Env) {
       Object.defineProperty(FakeDocument.prototype, "polygons", {
         get(this: FakeDocument) {
           return this._source.shapes.map(outlineOf);
+        }
+      });
+    }
+    if (name === "RegionBehavior") {
+      // A behavior stored without a name goes by the label of its type (client/documents/region-behavior.mjs:76-78).
+      Object.defineProperty(FakeDocument.prototype, "name", {
+        get(this: FakeDocument) {
+          return this._source.name || `Label of ${this._source.type}`;
         }
       });
     }

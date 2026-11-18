@@ -209,7 +209,7 @@ describe("code that Foundry runs by itself", () => {
       refused("invalid_params", /is a region behavior of the type executeMacro: .*These tools do not change its uuid\./)
     );
     assert.deepEqual(
-      [script._source.system.source, script.name, macro._source.system.uuid, writes(world)],
+      [script._source.system.source, script._source.name, macro._source.system.uuid, writes(world)],
       ["game.paused = true", "", "Macro.trap000000000000", []]
     );
 

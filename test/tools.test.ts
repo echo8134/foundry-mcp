@@ -28,6 +28,7 @@ describe("MCP tools", () => {
       "list_scenes",
       "place_tokens",
       "sync_lights",
+      "sync_regions",
       "sync_walls",
       "update_documents",
       "update_tokens"
@@ -535,6 +536,77 @@ describe("MCP tools", () => {
     });
   }
 
+  it("sends a sync_regions entry to the bridge with the fields only the module can check, its names trimmed", async () => {
+    const { client, calls } = await connect(() => ({}));
+    const region = {
+      name: " Stair ",
+      shapes: [
+        {
+          type: "polygon",
+          points: [
+            [0, 0],
+            [5, 0],
+            [5, 5]
+          ],
+          hole: true
+        }
+      ],
+      elevation: { bottom: 0, top: null },
+      behaviors: [{ type: " teleportToken ", name: " Up ", system: { destinations: [{ region: "Landing" }] } }],
+      id: "region0000000001",
+      managed: true,
+      levels: ["upper"]
+    };
+    await client.callTool({
+      name: "sync_regions",
+      arguments: { sceneId: "s", frame: { width: 10, height: 8 }, levels: ["upper"], regions: [region] }
+    });
+    assert.deepEqual(calls[0]!.params, {
+      sceneId: "s",
+      frame: { width: 10, height: 8 },
+      levels: ["upper"],
+      regions: [
+        {
+          ...region,
+          name: "Stair",
+          behaviors: [{ type: "teleportToken", name: "Up", system: { destinations: [{ region: "Landing" }] } }]
+        }
+      ]
+    });
+    await client.callTool({ name: "sync_regions", arguments: { regions: [] } });
+    assert.deepEqual(calls[1]!.params, { regions: [] });
+    for (const bad of [{ shapes: [] }, { name: " ", shapes: [] }, { name: "A" }, { name: "A", shapes: [{ x: 1 }] }]) {
+      const refused = await client.callTool({ name: "sync_regions", arguments: { regions: [bad] } });
+      assert.equal(refused.isError, true, JSON.stringify(bad));
+    }
+    assert.equal(calls.length, 2);
+  });
+
+  it("a timeout on sync_regions warns that it may have been applied, and that the same call again is safe", async () => {
+    const { client } = await connect(() => {
+      throw new BridgeError("timeout", "Foundry did not answer.");
+    });
+    const result = await client.callTool({ name: "sync_regions", arguments: { regions: [] } });
+    assert.match(text(result), /may still have been applied in Foundry\. Running the same call again is safe/);
+  });
+
+  it("describes what sync_regions owns, what it never touches and how a pair of stairs is built", async () => {
+    const { client } = await connect(() => ({}));
+    const { tools } = await client.listTools();
+    const description = tools.find((t) => t.name === "sync_regions")!.description ?? "";
+    for (const promise of [
+      /updated in place where it exists, so it keeps its id and its UUID/,
+      /Regions made by hand carry no flag and are never touched/,
+      /only the bridge-made regions of exactly that level set/,
+      /Behaviors someone added in\s+Foundry are never touched/,
+      /a second run writes nothing/,
+      /reported as pending/,
+      /executeScript and executeMacro are refused/
+    ]) {
+      assert.match(description, promise);
+    }
+  });
+
   it("sends showLights to the bridge for get_scene_image", async () => {
     const { client, calls } = await connect(() => ({
       mimeType: "image/webp",
@@ -628,7 +700,7 @@ describe("MCP tools", () => {
     assert.equal(text(result), "null");
   });
 
-  for (const tool of ["create_walls", "delete_walls", "sync_walls", "sync_lights"]) {
+  for (const tool of ["create_walls", "delete_walls", "sync_walls", "sync_lights", "sync_regions"]) {
     it(`${tool} advises passing the sceneId from get_scene`, async () => {
       const { client } = await connect(() => ({}));
       const { tools } = await client.listTools();

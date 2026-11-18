@@ -16,6 +16,13 @@ export function resolveScene(sceneId) {
   );
 }
 
+export function checkLevels(scene, levels) {
+  const unknownLevels = levels.filter((id) => !scene.levels.has(id));
+  if (unknownLevels.length > 0) {
+    throw new MethodError("invalid_params", `Unknown level ids for scene ${scene.id}: ${unknownLevels.join(", ")}.`);
+  }
+}
+
 export function sceneRect(scene) {
   const { sceneX: x, sceneY: y, sceneWidth: width, sceneHeight: height } = scene.dimensions;
   return { x, y, width, height };

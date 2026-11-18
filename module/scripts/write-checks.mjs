@@ -155,8 +155,8 @@ export function checkAsked(kind, asked, { remove = [], type, where = "", embedde
   }
 }
 
-function checkKeptAsGiven(asked, wanted, where) {
-  const recasts = recastLeaves(asked, wanted);
+function checkKeptAsGiven(asked, wanted, where, same) {
+  const recasts = recastLeaves(asked, wanted, same);
   if (recasts.length > 0) throw refuse(`${explainRecasts(recasts)} Give each value as Foundry stores it.`, where);
 }
 
@@ -179,14 +179,14 @@ function checkRemoval(kind, document, remove, where, advice) {
 
 /**
  * What a write is to bring about, with the HTML fields of the wanted data compared by what they say. `given` is the
- * data the HTML fields are found in, where the wanted data is in another shape than the schema describes.
+ * data the HTML fields are found in, where the wanted data is in another shape than the schema describes. `same`
+ * names further leaves that say the same in another spelling.
  * @returns {import("./data-diff.mjs").Asked}
  */
-const writeOf = (kind, wanted, { remove, type, given = wanted, embedded = false }) => ({
-  wanted,
-  remove,
-  same: sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded))
-});
+function writeOf(kind, wanted, { remove, type, given = wanted, embedded = false, same }) {
+  const html = sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded));
+  return { wanted, remove, same: same ? (path, a, b) => html(path, a, b) || same(path, a, b) : html };
+}
 
 /**
  * Every check of a change to a document that exists, and what the change is to bring about: the asked data against
@@ -195,11 +195,13 @@ const writeOf = (kind, wanted, { remove, type, given = wanted, embedded = false 
  * @param {{document: string, noun: string, ownFlags: readonly string[], alsoListed: string}} kind
  * @param {any} document
  * @param {Record<string, any>} asked
- * @param {{remove?: readonly string[], where?: string, advice?: string}} [options] `advice` ends the refusal of a
- *   removal that Foundry's model does not take
+ * @param {{remove?: readonly string[], where?: string, advice?: string, same?: import("./data-diff.mjs").SameLeaf}} [options]
+ *   `advice` ends the refusal of a removal that Foundry's model does not take. `same` takes two values of a leaf as
+ *   one where Foundry keeps a value in another spelling than the given one, both when it cleans the changes and in
+ *   what is stored.
  * @returns {Promise<import("./data-diff.mjs").Asked>}
  */
-export async function planUpdate(kind, document, asked, { remove = [], where = "", advice = "" } = {}) {
+export async function planUpdate(kind, document, asked, { remove = [], where = "", advice = "", same } = {}) {
   const { type } = document;
   checkAsked(kind, asked, { remove, type, where });
   let wanted;
@@ -208,10 +210,10 @@ export async function planUpdate(kind, document, asked, { remove = [], where = "
   } catch (error) {
     throw modelRefusal(kind, error, where);
   }
-  checkKeptAsGiven(asked, wanted, where);
+  checkKeptAsGiven(asked, wanted, where, same);
   if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
   checkRemoval(kind, document, remove, where, advice);
-  return writeOf(kind, wanted, { remove, type });
+  return writeOf(kind, wanted, { remove, type, same });
 }
 
 /**

@@ -172,6 +172,39 @@ const syncLightsInput = z
     ctx.value = { ...ctx.value, lights: kept };
   });
 
+// The module checks the other keys of a behavior, a shape and a region against the live schemas of Foundry.
+const regionBehaviorSchema = z.looseObject({
+  type: nonBlank.describe("Behavior type, for example changeLevel or teleportToken."),
+  name: trimmed.optional().describe("Name of the behavior, by which a later sync finds it. Default: its type."),
+  id: z.string().min(1).optional().describe("Read-only, as get_scene returns it. Never sent to Foundry."),
+  managed: z
+    .boolean()
+    .optional()
+    .describe("As get_scene returns it. false means added by hand: the entry is left out, and the behavior stays.")
+});
+
+const regionEntrySchema = z.looseObject({
+  name: nonBlank.describe("Region name, trimmed. A later sync of the same level set finds the region by it."),
+  shapes: z
+    .array(z.looseObject({ type: nonBlank.describe("rectangle, circle, ellipse, polygon, or another Foundry type.") }))
+    .describe("The shapes of the region, in `frame` coordinates. [] is a region without an area."),
+  behaviors: z
+    .array(regionBehaviorSchema)
+    .optional()
+    .describe("The bridge-made behaviors of the region. Omit to leave its behaviors as they are, [] removes them."),
+  id: z.string().min(1).optional().describe("Read-only, as get_scene returns it. Never sent to Foundry."),
+  managed: z
+    .boolean()
+    .optional()
+    .describe("As get_scene returns it. false means made by hand: the entry is left out, and the region stays."),
+  levels: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "As get_scene returns it. An entry whose levels are another level set than the call's levels is left out. Never written: the region gets the call's levels."
+    )
+});
+
 const tokenIds = z.array(z.string().min(1));
 
 const tokenAt = pointSchema.describe("The token's centre in `frame` coordinates.");
@@ -305,7 +338,7 @@ const SPECS: Record<Method, ToolSpec> = {
       "region. Behaviors are `{id, type, name, disabled, system, managed}`. system is the stored data of the " +
       "behavior type, the source of an executeScript included, but for a UUID that Foundry stores relative to the " +
       "behavior, such as a destination of a teleportToken: that is given as the absolute UUID it names. A region's " +
-      "own UUID is Scene.<scene id>.Region.<region id>.",
+      "own UUID is Scene.<scene id>.Region.<region id>. The regions can be passed back to sync_regions as they are.",
     input: z.object({
       sceneId,
       tokens: tokenIds.optional().describe("Ids of tokens to return in full in tokenData.")
@@ -454,6 +487,78 @@ const SPECS: Record<Method, ToolSpec> = {
       "showLights." +
       SAFER_SCENE_ID,
     input: syncLightsInput
+  }),
+  sync_regions: defineTool({
+    ifOutcomeUnknown:
+      " The call may still have been applied in Foundry. Running the same call again is safe: it writes only what still differs.",
+    description:
+      "Make the bridge-made regions of one level set of a scene exactly the given list, each found by its name. A " +
+      "region the list names is updated in place where it exists, so it keeps its id and its UUID, and only what " +
+      "differs is written. One that is missing is created, flagged as bridge-made. A bridge-made region of the " +
+      "level set that the list does not name is deleted. So an entry under another name deletes the region and " +
+      "creates a new one, with another UUID. Regions made by hand carry no flag and are never touched, also when " +
+      "one has the name of an entry: the result then lists it under handPlaced, and the bridge-made region of that " +
+      "name lies beside it. `regions` may be empty, which only removes the bridge-made regions of the level set. " +
+      "levels works as in sync_walls: the call's levels become the levels of every region in it, and the sync owns " +
+      "only the bridge-made regions of exactly that level set (no levels means all levels, and a set that names " +
+      "every level of the scene counts as no levels). Regions of other level sets stay. A scene of several levels " +
+      "takes one call for each level set: one for each single level, and one for each set of levels that a stair " +
+      "joins. An entry is name, shapes and any other stored Region field (get_schema with document Region lists " +
+      "them): elevation {bottom, top, topInclusive} in grid distance units, where null, the default, is no bound, " +
+      "color (#rrggbb, and Foundry picks one for a new region that gives none), visibility and hidden as get_scene " +
+      "returns them, restriction {enabled, type, priority}. A field left out of an existing region stays as it " +
+      "is. Keys starting with _ and flags.foundry-mcp are refused. shapes are in `frame`, the same frame model as " +
+      "sync_walls (omit frame for scene pixels), each `{type, hole, ...}`: rectangle {x, y, width, height, rotation} " +
+      "with x and y its top left corner, circle {x, y, radius} and ellipse {x, y, radiusX, radiusY, rotation} around " +
+      "x and y, polygon {points: [[x, y], ...]} with at least 3 points, and Foundry's other types with the fields " +
+      "get_scene returns for them (cone, ring, line, emanation, token, grid). hole: true cuts the shape out of the " +
+      "region. Points and lengths are stored in whole scene pixels. A shape may reach beyond the scene rectangle, " +
+      "as Foundry allows. behaviors, when given, are the bridge-made behaviors of the region, brought to the list " +
+      "in the same way by name: `{type, name, disabled, system}`. A behavior without a name goes by its type, so a " +
+      "region has one unnamed behavior of a type. One that exists under the name and type is updated in place, a " +
+      "missing one is created, and a bridge-made one the list does not name is deleted. Behaviors someone added in " +
+      "Foundry are never touched. Without behaviors the region keeps the behaviors it has, and behaviors: [] removes " +
+      "the bridge-made ones. system is the stored data of the behavior type (get_schema with document " +
+      "RegionBehavior and the type lists it). Two types make stairs. changeLevel (system {movementActions}, none " +
+      "needed) offers a token that enters the region the other levels the region is on. Sync it in a call whose " +
+      "levels are the levels the stair joins, or that has no levels for every level, with the shape where the stair " +
+      "is on both maps. On a region of one level it is refused, because it would offer nothing. teleportToken " +
+      "(system {destinations, placement: random, center or relative, snap, choice}) moves a token that enters into " +
+      "one of its destination regions, on this or another level or scene. For stairs that do not line up, make a " +
+      "region at each end with the other as its destination. A destination is the UUID of a region " +
+      '(Scene.<scene id>.Region.<region id>), or {region: "<name>"}: the region of that name in this call, or else ' +
+      "the one bridge-made region of that name on another level set of this scene. A destination must be on exactly " +
+      "one level, or the call is refused: Foundry teleports into no region that is on several. So the two ends of a " +
+      "stair between levels are on two level sets and take two calls. A UUID that leads to no region is refused. A " +
+      "name that no region has yet is left out and reported as pending in the result of that behavior. So two " +
+      "regions on different levels that name each other take three calls the first time: the first level set " +
+      "(pending), the second, and the first again. From then on each call finds both and changes nothing. No behavior that " +
+      "runs code is created or changed: executeScript and executeMacro are refused as in create_documents. The " +
+      "regions of get_scene can be passed back as they are: id is read and never written, an entry with managed: " +
+      "false (made by hand) is left out, so is an entry whose own levels are another level set than the call's, and " +
+      "so is a behavior with managed: false. If every given region is left out the call is refused, because it " +
+      "would otherwise delete the bridge-made regions: only a literally empty `regions` does that. A request that " +
+      "cannot be built is refused before anything is written: an unknown field, a shape that encloses nothing at " +
+      "that frame (a polygon with fewer than 3 points apart, a width, height or radius of 0), data Foundry's region " +
+      "or behavior model refuses, a value Foundry would store as something else, two entries of one name, two " +
+      "bridge-made regions of one name in the level set (named with their ids), and a region the call would delete " +
+      "that holds behaviors added by hand. Safe to run again with the same input: a second run writes nothing. It " +
+      "is not atomic in Foundry: if a write fails midway the error names what was written, and the same call again " +
+      "writes what still differs. Returns created, updated and deleted (counts of regions), regions [{id, name, " +
+      "created, changed (the field paths whose stored value changed), unapplied (those whose stored value is not the " +
+      "one asked for), behaviors [{id, name, type, created, changed, unapplied, pending}], removedBehaviors}] for each " +
+      "entry that was not left out, and the scene. An entry Foundry created nothing for has error in place of its " +
+      "id. Check the result with get_scene_image and showRegions." +
+      SAFER_SCENE_ID,
+    input: z.object({
+      sceneId,
+      frame: frameSchema.optional().describe(frameDescription),
+      regions: z.array(regionEntrySchema),
+      levels: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Level ids the regions belong to, and the level set this sync owns. Default: all levels.")
+    })
   }),
   list_scenes: defineTool({
     description:

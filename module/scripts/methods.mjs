@@ -14,7 +14,7 @@ import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
 import { lightData, lightFields } from "./light-data.mjs";
 import { levelFields } from "./region-data.mjs";
-import { regionFields } from "./region-methods.mjs";
+import { prepareRegions, regionFields, syncRegions } from "./region-methods.mjs";
 import {
   canvasOverflow,
   planSceneChanges,
@@ -30,6 +30,7 @@ import { storedTokenData, tokenFields } from "./token-data.mjs";
 import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
 import {
+  checkLevels,
   createMissingFolders,
   findFolder,
   folderRecords,
@@ -47,6 +48,7 @@ export const QUEUE_BUDGET_MS = {
   delete_walls: 25_000,
   sync_walls: 25_000,
   sync_lights: 25_000,
+  sync_regions: 25_000,
   ensure_scene: 85_000,
   place_tokens: 25_000,
   update_tokens: 25_000,
@@ -198,13 +200,6 @@ async function getSceneImage({
 }
 
 const sceneLevelIds = (scene) => [...scene.levels.keys()];
-
-function checkLevels(scene, levels) {
-  const unknownLevels = levels.filter((id) => !scene.levels.has(id));
-  if (unknownLevels.length > 0) {
-    throw new MethodError("invalid_params", `Unknown level ids for scene ${scene.id}: ${unknownLevels.join(", ")}.`);
-  }
-}
 
 function checkAnimations(lights) {
   for (const { animation, negative } of lights) {
@@ -557,6 +552,7 @@ export const METHODS = Object.freeze({
   delete_walls: serialised("delete_walls", onScene(), deleteWalls),
   sync_walls: serialised("sync_walls", onScene(checkWallRequest), syncWalls),
   sync_lights: serialised("sync_lights", onScene(checkLightRequest), syncLights),
+  sync_regions: serialised("sync_regions", prepareRegions, syncRegions),
   list_scenes: listScenes,
   ensure_scene: serialised("ensure_scene", checkEnsureSceneInput, ensureScene),
   list_actors: listActors,

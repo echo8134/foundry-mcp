@@ -38,7 +38,7 @@ const SHAPES = Object.freeze({
   emanation: { base: true, reach: ["radius"] }
 });
 
-export const SHAPE_TYPES = Object.freeze(Object.keys(SHAPES));
+const SHAPE_TYPES = Object.freeze(Object.keys(SHAPES));
 
 /** @param {unknown} value @returns {value is number} */
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);

@@ -116,9 +116,11 @@ const keptAsGiven = (given, kept) =>
  * that only `wanted` has are the defaults cleaning filled in, and are no difference.
  * @param {Record<string, unknown>} given
  * @param {unknown} wanted the given data after Foundry's cleaning
+ * @param {SameLeaf} [same] takes a given value and what Foundry keeps of it as one, such as a UUID it keeps in
+ *   another spelling
  * @returns {Recast[]}
  */
-export function recastLeaves(given, wanted) {
+export function recastLeaves(given, wanted, same = never) {
   /** @type {Recast[]} */
   const recasts = [];
   /** @param {unknown} give @param {unknown} want @param {string} path */
@@ -127,7 +129,7 @@ export function recastLeaves(given, wanted) {
       for (const [key, value] of entries(give)) walk(value, own(want, key), join(path, key));
     } else if (Array.isArray(give) && Array.isArray(want) && give.length === want.length) {
       for (const [index, value] of give.entries()) walk(value, want[index], join(path, index));
-    } else if (isPlainObject(give) || Array.isArray(give) || !keptAsGiven(give, want)) {
+    } else if (isPlainObject(give) || Array.isArray(give) || !(keptAsGiven(give, want) || same(path, give, want))) {
       recasts.push({ path, given: give, kept: want });
     }
   };

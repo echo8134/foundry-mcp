@@ -15,7 +15,8 @@ const methods = METHODS as unknown as Record<
   | "sync_walls"
   | "create_walls"
   | "delete_walls"
-  | "sync_lights",
+  | "sync_lights"
+  | "sync_regions",
   Method
 >;
 const pristine = { budgets: { ...QUEUE_BUDGET_MS }, timing: { ...timing } };
@@ -1115,6 +1116,7 @@ describe("the write queue", () => {
       [10, 0]
     ]
   };
+  const stair = { name: "Stair", shapes: [{ type: "rectangle", x: 0, y: 0, width: 100, height: 100 }] };
   let world: ReturnType<typeof fakeWorld>;
   let scene: any;
   const open: (() => void)[] = [];
@@ -1389,9 +1391,16 @@ describe("the write queue", () => {
       ["create_walls", () => methods.create_walls({ sceneId: scene.id, paths: [line] })],
       ["delete_walls", () => methods.delete_walls({ sceneId: scene.id, ids: [wall.id] })],
       ["sync_walls", () => methods.sync_walls({ sceneId: scene.id, paths: [line] })],
-      ["sync_lights", () => methods.sync_lights({ sceneId: scene.id, lights: [{ at: [10, 10], dim: 5 }] })]
+      ["sync_lights", () => methods.sync_lights({ sceneId: scene.id, lights: [{ at: [10, 10], dim: 5 }] })],
+      ["sync_regions", () => methods.sync_regions({ sceneId: scene.id, regions: [stair] })]
     ];
-    const writes = () => [world.log.wallCreates, world.log.wallDeletes, world.log.lightCreates, world.log.lightDeletes];
+    const writes = () => [
+      world.log.wallCreates,
+      world.log.wallDeletes,
+      world.log.lightCreates,
+      world.log.lightDeletes,
+      world.log.documentWrites.length
+    ];
     for (const [name, call] of calls) {
       const hold = held();
       world.control.thumbnailGate = hold.promise;
@@ -1413,6 +1422,7 @@ describe("the write queue", () => {
       ["create_walls", () => methods.create_walls({ paths: [line] })],
       ["sync_walls", () => methods.sync_walls({ paths: [line] })],
       ["sync_lights", () => methods.sync_lights({ lights: [{ at: [10, 10], dim: 5 }] })],
+      ["sync_regions", () => methods.sync_regions({ regions: [stair] })],
       ["delete_walls", () => methods.delete_walls({ all: true })]
     ];
     for (const [name, call] of calls) {
@@ -1426,7 +1436,7 @@ describe("the write queue", () => {
       slow.open();
       await running;
       assert.equal((await queued).sceneId, scene.id, name);
-      assert.deepEqual([other.walls.size, other.lights.size], [0, 0], name);
+      assert.deepEqual([other.walls.size, other.lights.size, other.regions.size], [0, 0, 0], name);
     }
   });
 

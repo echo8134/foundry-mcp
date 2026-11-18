@@ -110,6 +110,17 @@ describe("recastLeaves", () => {
       { path: "a.toString", given: 1, kept: undefined }
     ]);
   });
+
+  it("takes a value as kept where the caller says the two say the same, and only there", () => {
+    const given = { system: { destinations: ["Scene.s.Region.a", "Scene.s.Region.b"] }, name: "Scene.s.Region.a" };
+    const wanted = { system: { destinations: ["..a", "..x"] }, name: "..a" };
+    const sameRegion: SameLeaf = (path, a, b) =>
+      path.startsWith("system.destinations.") && String(a).split(".").at(-1) === String(b).split(".").at(-1);
+    assert.deepEqual(recastLeaves(given, wanted, sameRegion), [
+      { path: "system.destinations.1", given: "Scene.s.Region.b", kept: "..x" },
+      { path: "name", given: "Scene.s.Region.a", kept: "..a" }
+    ]);
+  });
 });
 
 describe("explainRecasts", () => {

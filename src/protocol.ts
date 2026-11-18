@@ -12,6 +12,7 @@ export const METHODS = [
   "delete_walls",
   "sync_walls",
   "sync_lights",
+  "sync_regions",
   "list_scenes",
   "ensure_scene",
   "list_actors",

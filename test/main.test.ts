@@ -82,6 +82,7 @@ describe("main.ts", () => {
       "list_scenes",
       "place_tokens",
       "sync_lights",
+      "sync_regions",
       "sync_walls",
       "update_documents",
       "update_tokens"

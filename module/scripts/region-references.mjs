@@ -34,3 +34,17 @@ export function systemAsRead(behavior) {
   }
   return system;
 }
+
+/**
+ * Two spellings of a UUID say the same when they name one document: Foundry may store the UUID it is given as one
+ * relative to the behavior.
+ * @returns {import("./data-diff.mjs").SameLeaf}
+ */
+export function sameReferences(behavior) {
+  const fields = referenceFields(behavior.type).map(({ key }) => `system.${key}`);
+  return (path, a, b) =>
+    fields.some((field) => path === field || path.startsWith(`${field}.`)) &&
+    typeof a === "string" &&
+    typeof b === "string" &&
+    namedBy(a, behavior) === namedBy(b, behavior);
+}
