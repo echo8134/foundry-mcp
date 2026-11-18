@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { LIGHT_FIELDS, lightData, lightFields, lightMarkers } from "../module/scripts/light-data.mjs";
-import { lightSchema } from "../src/tools.ts";
+import { lightSchema } from "../src/scene-tools.ts";
 
 const flags = { "foundry-mcp": { managed: true } };
 

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { BridgeError } from "../src/hub.ts";
-import { lightSchema, TOOLS } from "../src/tools.ts";
+import { lightSchema } from "../src/scene-tools.ts";
+import { TOOLS } from "../src/tools.ts";
 import { connect, text } from "./tool-client.ts";
 
 describe("MCP tools", () => {
