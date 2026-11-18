@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { asStoredEntries, TYPED_ENTRY_SCHEMAS, withEntryId, withoutStoredFlag } from "../module/scripts/item-data.mjs";
+import { asStoredEntries, TYPED_ENTRY_SCHEMAS, withEntryId } from "../module/scripts/item-data.mjs";
 import { idFromLabel } from "../module/scripts/labels.mjs";
 import { SchemaField, StringField, TypeDataField5e } from "./fake-system.ts";
 
@@ -119,24 +119,6 @@ describe("withEntryId", () => {
         "system.activities.-=bite"
       ]
     );
-  });
-});
-
-describe("withoutStoredFlag", () => {
-  const stored = { flags: { "foundry-mcp": { managed: true }, world: { a: 1 } } };
-
-  it("drops the bridge's own flag from given data while it equals the stored one", () => {
-    const given = { name: "x", flags: { "foundry-mcp": { managed: true }, world: { a: 2 } } };
-    assert.deepEqual(withoutStoredFlag(given, stored), { name: "x", flags: { world: { a: 2 } } });
-    assert.deepEqual(given.flags["foundry-mcp"], { managed: true });
-  });
-
-  it("keeps a flag that differs from the stored one, or that a new document is given", () => {
-    const other = { flags: { "foundry-mcp": { managed: false } } };
-    assert.equal(withoutStoredFlag(other, stored), other);
-    const fresh = { flags: { "foundry-mcp": { managed: true } } };
-    assert.equal(withoutStoredFlag(fresh, {}), fresh);
-    assert.deepEqual(withoutStoredFlag({ flags: "x" }, stored), { flags: "x" });
   });
 });
 

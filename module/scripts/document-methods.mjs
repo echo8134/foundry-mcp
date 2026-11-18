@@ -3,7 +3,6 @@
 
 import {
   classOf,
-  embeddedFieldsOf,
   folderPathOf,
   hasField,
   hasFolders,
@@ -14,6 +13,7 @@ import {
   targetOf
 } from "./document-access.mjs";
 import { withoutSecrets } from "./document-rules.mjs";
+import { embeddedFieldsOf } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { isManaged } from "./scope.mjs";

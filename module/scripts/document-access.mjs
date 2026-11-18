@@ -2,7 +2,6 @@
 // it, where a new one may go, and which compendium lock stands in the way of a write.
 
 import { systemTypes } from "./actor-methods.mjs";
-import { isPlainObject } from "./data-diff.mjs";
 import { DOCUMENT_TYPES } from "./document-types.mjs";
 import { MethodError } from "./errors.mjs";
 import { classChain } from "./schema.mjs";
@@ -49,16 +48,6 @@ export function initialTypeOf(cls) {
 /** Folders hold documents of these types (common/constants.mjs:542-543), in the world and inside a compendium pack. */
 export const hasFolders = (type) => CONST.FOLDER_DOCUMENT_TYPES.includes(type);
 
-/**
- * The embedded documents of a class, each with the field that stores them and the class of its documents: Foundry's
- * Document.hierarchy (common/abstract/document.mjs:259-266), whose fields name that class as `model`
- * (common/data/fields.mjs:3033-3035). A token's own actor data is one such document and no collection
- * (common/documents/token.mjs:64).
- * @returns {{field: string, cls: any}[]}
- */
-export const embeddedFieldsOf = (cls) =>
-  Object.entries(cls.hierarchy).map(([field, { model }]) => ({ field, cls: model }));
-
 /** The document names a class embeds, as its metadata lists them (common/abstract/document.mjs:131). */
 const embeddedNamesOf = (cls) => Object.keys(cls.metadata.embedded ?? {});
 
@@ -68,52 +57,6 @@ const holdersOf = (type) =>
     const cls = CONFIG[name]?.documentClass;
     return cls !== undefined && embeddedNamesOf(cls).includes(type);
   });
-
-/**
- * Applies `change` to the data of a document, and to the data of each embedded document given inside it, down through
- * their own embedded documents. `path` names where the data lies, and ends in a dot below the top.
- * @param {Record<string, any>} data
- * @param {any} cls
- * @param {(data: Record<string, any>, cls: any, path: string) => Record<string, any>} change gets a shallow copy
- * @returns {Record<string, any>}
- */
-export function mapGiven(data, cls, change, path = "") {
-  const changed = change({ ...data }, cls, path);
-  for (const { field, cls: inner } of embeddedFieldsOf(cls)) {
-    const given = changed[field];
-    if (Array.isArray(given)) {
-      changed[field] = given.map((child, index) =>
-        isPlainObject(child) ? mapGiven(child, inner, change, `${path}${field}.${index}.`) : child
-      );
-    } else if (isPlainObject(given)) {
-      changed[field] = mapGiven(given, inner, change, `${path}${field}.`);
-    }
-  }
-  return changed;
-}
-
-/**
- * Document data with each embedded collection as an object keyed by position, down through the embedded documents'
- * own collections. The comparisons of data-diff.mjs take a list as one value, and so would call a created page changed
- * for the id Foundry gave it. Keyed by position, an embedded document is compared field by field with the one given in
- * its place.
- * @param {unknown} data
- * @param {any} cls
- * @returns {any}
- */
-export function byPosition(data, cls) {
-  if (!isPlainObject(data)) return data;
-  const keyed = { ...data };
-  for (const { field, cls: inner } of embeddedFieldsOf(cls)) {
-    const value = keyed[field];
-    if (Array.isArray(value)) {
-      keyed[field] = Object.fromEntries(value.map((child, index) => [index, byPosition(child, inner)]));
-    } else if (isPlainObject(value)) {
-      keyed[field] = byPosition(value, inner);
-    }
-  }
-  return keyed;
-}
 
 /** fromUuid loads a compendium document, and resolves null where nothing is (client/utils/helpers.mjs:172-183). */
 async function fromUuid(uuid) {

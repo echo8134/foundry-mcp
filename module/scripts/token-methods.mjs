@@ -1,19 +1,12 @@
 import { resolveActor } from "./actor-methods.mjs";
-import {
-  changedPaths,
-  diffData,
-  explainRecasts,
-  isPlainObject,
-  pickData,
-  recastLeaves,
-  sameData
-} from "./data-diff.mjs";
+import { changedPaths, diffData, explainRecasts, isPlainObject, pickData, recastLeaves } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { explainFieldProblems, fieldProblems } from "./field-check.mjs";
 import { frameToCanvas } from "./geometry.mjs";
 import { FLAG_SCOPE } from "./scope.mjs";
 import { tokenCentre } from "./token-data.mjs";
 import { cleanedChanges, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
+import { kindOf, withoutOwnFlags } from "./write-checks.mjs";
 
 /** Token fields a caller may not give, with what to do instead. */
 const NOT_GIVEN = Object.freeze({
@@ -242,11 +235,7 @@ function withoutStoredIdentity({ actorId, ...fields }, source, index) {
   if (actorId !== undefined && actorId !== source.actorId) {
     throw refuse(index, "actorId cannot be changed: a placed token keeps its actor. Leave it out.");
   }
-  const { flags } = fields;
-  if (!isPlainObject(flags) || !Object.hasOwn(flags, FLAG_SCOPE)) return fields;
-  if (!sameData(flags[FLAG_SCOPE], source.flags?.[FLAG_SCOPE])) return fields;
-  const { [FLAG_SCOPE]: _stored, ...others } = flags;
-  return { ...fields, flags: others };
+  return withoutOwnFlags(kindOf("Token"), fields, source);
 }
 
 /** Every check of an update, and for each token what Foundry would store and which part of it differs. Reads only. */

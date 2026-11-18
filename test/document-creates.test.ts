@@ -245,6 +245,32 @@ describe("create_documents", () => {
     );
   });
 
+  it("copies an actor whose prototype token carries the bridge's flag, as update_documents takes it back", async () => {
+    const goblin = world.addActor({
+      name: "Goblin",
+      type: "npc",
+      flags: MANAGED,
+      system: { details: { cr: 0.25 } },
+      prototypeToken: { name: "Goblin", actorLink: false, flags: { ...MANAGED, world: { note: "x" } } }
+    });
+    const { data } = await viaTool("get_document", { uuid: `Actor.${goblin.id}` });
+    assert.deepEqual(data.prototypeToken.flags, { ...MANAGED, world: { note: "x" } });
+    const taken = await viaTool("update_documents", { documents: [{ uuid: `Actor.${goblin.id}`, data }] });
+    assert.deepEqual(taken.documents[0].changed, []);
+    const result = await create({ type: "Actor", documents: [{ ...data, name: "Goblin again" }] });
+    assert.deepEqual([result.created, result.documents[0].unapplied], [1, ["_id"]]);
+    const copy = world.actors.get(result.documents[0].id);
+    assert.deepEqual(
+      [copy.name, copy._source.system.details.cr, copy._source.flags, copy._source.prototypeToken.flags],
+      ["Goblin again", 0.25, MANAGED, { world: { note: "x" } }]
+    );
+    await assert.rejects(
+      create({ type: "Actor", documents: [{ ...data, prototypeToken: { flags: { "foundry-mcp": { managed: 1 } } } }] }),
+      refused("invalid_params", /^documents\[0\]: prototypeToken\.flags\.foundry-mcp cannot be given/)
+    );
+    assert.equal(world.actors.size, 2);
+  });
+
   it("stores HTML as the server spells it and does not call that a difference", async () => {
     const result = await create({
       type: "JournalEntry",

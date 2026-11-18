@@ -782,9 +782,10 @@ export function fakeActors(env: Env) {
     static schema = kinds.Actor.schema;
     static metadata = system.Actor.documentClass.metadata;
     static hierarchy = { items: kinds.Actor.schema.fields.items, effects: kinds.Actor.schema.fields.effects };
+    /** An unsaved actor keeps the id its data names, as any document Foundry builds does. */
     constructor(data: Source) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake actor is a plain object that builtActor builds.
-      return builtActor(data, null);
+      return builtActor(data, data._id ?? null);
     }
     static async create(data: Source) {
       await delay();

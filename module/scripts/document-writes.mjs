@@ -2,15 +2,12 @@
 // writes the plan. A plan is made once before the call waits for its turn, to refuse a bad request at once, and again
 // when its turn comes: a write queued before it may have changed what the plan was made on.
 
-import { diffData, dropAt, hasPath, isPlainObject, pickData, sameData, updateFor, writeOutcome } from "./data-diff.mjs";
+import { diffData, isPlainObject, pickData, putAt, updateFor, writeOutcome } from "./data-diff.mjs";
 import {
-  byPosition,
   classOf,
-  embeddedFieldsOf,
   findDocument,
   hasField,
   initialTypeOf,
-  mapGiven,
   packOf,
   refuseLocked,
   resolveDocument,
@@ -19,10 +16,9 @@ import {
   targetOf
 } from "./document-access.mjs";
 import { rulesOf, secretsGiven } from "./document-rules.mjs";
+import { byPosition, embeddedFieldsOf, mapGiven } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import { documentsWithin } from "./field-check.mjs";
-import { withoutStoredFlag } from "./item-data.mjs";
-import { getPath } from "./paths.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
   checkAsked,
@@ -34,6 +30,7 @@ import {
   refuse,
   walkOf,
   wantedChanges,
+  withoutOwnFlags,
   writeOf
 } from "./write-checks.mjs";
 
@@ -59,31 +56,28 @@ function refuseRuledWithin(cls, data, walk, where) {
   }
 }
 
-/** The flags of a document a create has just made. */
-const AS_CREATED = Object.freeze({ flags: { [FLAG_SCOPE]: { managed: true } } });
+/** The bridge's own flag on a document a create has just made. */
+const MANAGED = Object.freeze({ managed: true });
 
 /**
  * get_document returns the bridge's own flag in the data of a bridge-made document, and that data can be given to
- * make a copy. So the flag is taken where it says what a create sets anyway, on the document and on the embedded
- * documents given with it, and any other value of it is refused.
+ * make a copy. So the flag is taken where it is the one of a bridge-made document, at every path the kind of document
+ * has it, on the document and on the embedded documents given with it: a create sets it anyway, and on the prototype
+ * token of an actor, where it does not belong, a create sets none.
  */
-const withoutOwnFlags = (given, cls, where) =>
-  mapGiven(given, cls, (data, _inner, path) => {
-    const kept = withoutStoredFlag(data, AS_CREATED);
-    if (isPlainObject(kept.flags) && Object.hasOwn(kept.flags, FLAG_SCOPE)) {
-      throw refuse(
-        `${path}flags.${FLAG_SCOPE} cannot be given: it is the bridge's own flag, which only the bridge sets.`,
-        where
-      );
-    }
-    return kept;
+const withoutMadeFlags = (given, cls) =>
+  mapGiven(given, cls, (data, inner) => {
+    const kind = kindOf(inner.documentName);
+    const made = {};
+    for (const path of kind.ownFlags) putAt(made, path, MANAGED);
+    return withoutOwnFlags(kind, data, made);
   });
 
 /** Every document a create makes is the bridge's, and so is every embedded document made with it that has flags. */
 const asBridgeMade = (asked, cls) =>
   mapGiven(asked, cls, (data, inner) =>
     hasField(inner, "flags")
-      ? { ...data, flags: { ...(isPlainObject(data.flags) ? data.flags : {}), ...AS_CREATED.flags } }
+      ? { ...data, flags: { ...(isPlainObject(data.flags) ? data.flags : {}), [FLAG_SCOPE]: MANAGED } }
       : data
   );
 
@@ -109,7 +103,7 @@ function typeOfNew(cls, asked, where) {
 async function planCreation({ cls, parent, pack }, given, where) {
   const name = cls.documentName;
   const kind = kindOf(name);
-  const asked = withoutOwnFlags(given, cls, where);
+  const asked = withoutMadeFlags(given, cls);
   const type = typeOfNew(cls, asked, where);
   refuseRuled(rulesOf(name).create?.(asked), where);
   refuseRuledWithin(cls, asked, walkOf(type, true), where);
@@ -182,19 +176,6 @@ export async function createDocuments(request) {
   };
 }
 
-/**
- * get_document returns the document's id and the bridge's own flag in the stored data, and that data can be passed
- * back. So both are taken while they equal the stored ones, the flag wherever the kind of document has it, and are no
- * part of the change.
- */
-function withoutStoredIdentity(kind, { _id, ...given }, stored) {
-  const data = structuredClone(given);
-  for (const path of kind.ownFlags) {
-    if (hasPath(data, path) && sameData(getPath(data, path), getPath(stored, path))) dropAt(data, path);
-  }
-  return data;
-}
-
 /** Every check of a change to one document, and what the change is to bring about. Reads only. */
 async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   const document = await resolveDocument(uuid, { where, write: true });
@@ -221,7 +202,9 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
       where
     );
   }
-  const asked = withoutStoredIdentity(kind, given, document._source);
+  // get_document returns the id in the stored data, which can be passed back: the same id is no part of the change.
+  const { _id: _same, ...rest } = given;
+  const asked = withoutOwnFlags(kind, rest, document._source);
   refuseRuled(rulesOf(name).update?.(document, asked, remove), where);
   checkAsked(kind, asked, remove, document.type, where);
   const wanted = wantedChanges(kind, document, asked, where);

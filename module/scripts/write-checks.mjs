@@ -1,7 +1,8 @@
 // The checks every write of a document runs before anything is written, and the wording of their refusals. `where`
 // names the entry of the request a refusal is about, and is empty for the one document a call is about.
 
-import { explainRecasts, givesValueOn, hasPath, recastLeaves, updateFor } from "./data-diff.mjs";
+import { dropAt, explainRecasts, givesValueOn, hasPath, recastLeaves, sameData, updateFor } from "./data-diff.mjs";
+import { mapGiven } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import {
   explainFieldProblems,
@@ -11,6 +12,7 @@ import {
   sameHtml
 } from "./field-check.mjs";
 import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
+import { getPath } from "./paths.mjs";
 import { FLAG_SCOPE } from "./scope.mjs";
 import { canonicalHtml, checkUpdate, cleanedChanges, loadTexture } from "./world.mjs";
 
@@ -65,11 +67,44 @@ export const modelRefusal = (kind, error, where = "") =>
   refuse(`Foundry's ${kind.noun} model refuses the data: ${error.message}`, where);
 
 /**
+ * The tools that read a document return the bridge's own flag in its stored data, and that data can be passed back.
+ * So the flag is taken where it says what is stored, at every path the kind of document has it, and is no part of the
+ * change. With any other value it stays in the data, for checkAsked to refuse.
+ * @param {{ownFlags: readonly string[]}} kind
+ * @param {Record<string, any>} given
+ * @param {Record<string, any>} stored the stored data of the document, or what a new one is made with
+ * @returns {Record<string, any>}
+ */
+export function withoutOwnFlags(kind, given, stored) {
+  const taken = kind.ownFlags.filter(
+    (path) => hasPath(given, path) && sameData(getPath(given, path), getPath(stored, path))
+  );
+  if (taken.length === 0) return given;
+  const data = structuredClone(given);
+  for (const path of taken) dropAt(data, path);
+  return data;
+}
+
+/** Where the data gives the bridge's own flag: in the document, and in each embedded document given with it. */
+function ownFlagsGiven(kind, asked) {
+  const paths = [];
+  mapGiven(asked, CONFIG[kind.document].documentClass, (data, cls, path) => {
+    paths.push(
+      ...kindOf(cls.documentName)
+        .ownFlags.filter((flag) => hasPath(data, flag))
+        .map((flag) => path + flag)
+    );
+    return data;
+  });
+  return paths;
+}
+
+/**
  * The given data and the entries to remove, against the fields the document stores. Reads only. With `embedded` the
  * embedded documents given inside the data are checked too, and without it refused.
  */
 export function checkAsked(kind, asked, remove, type, where = "", embedded) {
-  const given = kind.ownFlags.filter((path) => hasPath(asked, path));
+  const given = ownFlagsGiven(kind, asked);
   if (given.length > 0) {
     throw refuse(
       `${given.join(" and ")} cannot be given: it is the bridge's own flag, which only the bridge sets.`,

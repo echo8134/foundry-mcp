@@ -11,7 +11,7 @@ import { systemTypes } from "./actor-methods.mjs";
 import { dropAt, entriesToRemove, giveElementIds, pickData, updateFor, writeOutcome } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { elementIdArrays } from "./field-check.mjs";
-import { asStoredEntries, withEntryId, withoutStoredFlag } from "./item-data.mjs";
+import { asStoredEntries, withEntryId } from "./item-data.mjs";
 import { idFor } from "./labels.mjs";
 import { claimNamed, FLAG_SCOPE } from "./scope.mjs";
 import {
@@ -24,6 +24,7 @@ import {
   refuse,
   walkOf,
   wantedChanges,
+  withoutOwnFlags,
   writeOf
 } from "./write-checks.mjs";
 
@@ -89,7 +90,7 @@ function askedItemData(entry, stored, type, at) {
   const given = Object.fromEntries(
     ITEM_DATA_KEYS.filter((key) => entry[key] !== undefined).map((key) => [key, entry[key]])
   );
-  const { data, problems } = asStoredEntries(withoutStoredFlag(given, stored), stored, entryTypes());
+  const { data, problems } = asStoredEntries(withoutOwnFlags(KINDS.Item, given, stored), stored, entryTypes());
   if (problems.length > 0) throw refuse(problems.join(" "), at);
   return withElementIds(KINDS.Item, data, stored, type);
 }
@@ -128,7 +129,7 @@ async function planEffectChange(effect, given, where) {
     throw refuse(`${effect.name} is of the type ${effect.type}, and an effect keeps its type. Leave type out.`, at);
   }
   const stored = effect._source;
-  const asked = withElementIds(kind, withoutStoredFlag(given, stored), stored, effect.type);
+  const asked = withElementIds(kind, withoutOwnFlags(kind, given, stored), stored, effect.type);
   checkAsked(kind, asked, [], effect.type, at);
   const wanted = wantedChanges(kind, effect, asked, at);
   checkKeptAsGiven(asked, wanted, at);

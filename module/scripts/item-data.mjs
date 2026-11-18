@@ -4,10 +4,9 @@
 // module/data/fields/activities-field.mjs:58-65, advancement-collection-field.mjs:36-43: both collections are keyed by
 // `_id`). A caller may write a label in place of an id, and leaves out what an entry that exists already says.
 
-import { isPlainObject, sameData } from "./data-diff.mjs";
+import { isPlainObject } from "./data-diff.mjs";
 import { isReservedKey } from "./field-check.mjs";
 import { idFor } from "./labels.mjs";
-import { FLAG_SCOPE } from "./scope.mjs";
 
 /** @typedef {{key: string, noun: string, document: string}} TypedMap */
 
@@ -115,19 +114,4 @@ export function withEntryId(path) {
   if (root !== "system" || label === undefined || isReservedKey(label)) return path;
   if (!TYPED_MAPS.some((map) => map.key === key)) return path;
   return [root, key, idFor(label), ...rest].join(".");
-}
-
-/**
- * get_actor returns the bridge's own flag in the stored data of an item or an effect, and that data can be passed
- * back. So the flag is taken while it equals the stored one, and is no part of the change.
- * @param {Record<string, any>} given
- * @param {Record<string, any>} stored the stored data of the document, or an empty object for a new one
- * @returns {Record<string, any>}
- */
-export function withoutStoredFlag(given, stored) {
-  const { flags } = given;
-  if (!isPlainObject(flags) || !Object.hasOwn(flags, FLAG_SCOPE)) return given;
-  if (!sameData(flags[FLAG_SCOPE], stored.flags?.[FLAG_SCOPE])) return given;
-  const { [FLAG_SCOPE]: _stored, ...others } = flags;
-  return { ...given, flags: others };
 }
