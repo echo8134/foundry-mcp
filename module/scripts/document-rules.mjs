@@ -1,8 +1,8 @@
 // What the generic document tools hold back for single document names, in one table that create, update, delete and
 // read consult. A rule answers with the sentence of a refusal, or with null.
 
-import { scenesWithTokensOf } from "./actor-writes.mjs";
 import { hasPath, sameData } from "./data-diff.mjs";
+import { scenesWithTokensOf } from "./world.mjs";
 
 /**
  * @typedef {object} Rules

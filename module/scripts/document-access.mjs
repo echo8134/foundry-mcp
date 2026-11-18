@@ -1,7 +1,6 @@
 // What the generic document tools know of any document: its class and what the class says of it, how a UUID leads to
 // it, where a new one may go, and which compendium lock stands in the way of a write.
 
-import { systemTypes } from "./actor-methods.mjs";
 import { DOCUMENT_TYPES } from "./document-types.mjs";
 import { MethodError } from "./errors.mjs";
 import { classChain } from "./schema.mjs";
@@ -24,6 +23,18 @@ export function classOf(type) {
 }
 
 const fieldsOf = (cls) => cls.schema.fields;
+
+/** Core lists "base" (CONST.BASE_DOCUMENT_TYPE) for every typed document; only some may be created with it (common/abstract/document.mjs:462). */
+export function systemTypes(documentName) {
+  const { baseTypeAllowed } = CONFIG[documentName].documentClass.metadata;
+  return game.documentTypes[documentName].filter((type) => type !== "base" || baseTypeAllowed === true);
+}
+
+export function checkType(types, type, noun) {
+  if (!types.includes(type)) {
+    throw new MethodError("invalid_params", `Unknown ${noun} "${type}". Use one of: ${types.join(", ")}.`);
+  }
+}
 
 export const hasField = (cls, name) => Object.hasOwn(fieldsOf(cls), name);
 

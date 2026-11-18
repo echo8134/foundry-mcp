@@ -7,8 +7,8 @@
 // effects and actor data alike. An item of the world actor that is changed for one token is stored whole with that
 // token, so its entries can be removed there, and one that is deleted for a token leaves a tombstone with it.
 
-import { systemTypes } from "./actor-methods.mjs";
 import { dropAt, entriesToRemove, giveElementIds, updateFor, writeOutcome } from "./data-diff.mjs";
+import { systemTypes } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
 import { elementIdArrays } from "./field-check.mjs";
 import { asStoredEntries, withEntryId } from "./item-data.mjs";

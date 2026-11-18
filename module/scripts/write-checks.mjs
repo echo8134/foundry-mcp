@@ -21,8 +21,8 @@ import {
   removalProblems,
   sameHtml
 } from "./field-check.mjs";
-import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
 import { getPath } from "./paths.mjs";
+import { TYPED_ENTRY_SCHEMAS } from "./schema.mjs";
 import { FLAG_SCOPE } from "./scope.mjs";
 import { canonicalHtml, checkUpdate, cleanedChanges, loadTexture } from "./world.mjs";
 

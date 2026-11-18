@@ -1,23 +1,12 @@
 import { derivedValues } from "./actor-data.mjs";
 import { dropAt } from "./data-diff.mjs";
+import { checkType, systemTypes } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { folderRecords, takenBack } from "./world.mjs";
 
 const MAX_ACTORS = 200;
-
-/** Core lists "base" (CONST.BASE_DOCUMENT_TYPE) for every typed document; only some may be created with it (common/abstract/document.mjs:462). */
-export function systemTypes(documentName) {
-  const { baseTypeAllowed } = CONFIG[documentName].documentClass.metadata;
-  return game.documentTypes[documentName].filter((type) => type !== "base" || baseTypeAllowed === true);
-}
-
-export function checkType(types, type, noun) {
-  if (!types.includes(type)) {
-    throw new MethodError("invalid_params", `Unknown ${noun} "${type}". Use one of: ${types.join(", ")}.`);
-  }
-}
 
 const byFolderThenName = (a, b) =>
   a.path.join("\0").localeCompare(b.path.join("\0")) || a.actor.name.localeCompare(b.actor.name);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { configKeys, describeField, selectPath } from "../module/scripts/schema.mjs";
+import { configKeys, describeField, selectPath, TYPED_ENTRY_SCHEMAS } from "../module/scripts/schema.mjs";
 import {
   ActivitiesField,
   ArrayField,
@@ -21,6 +21,7 @@ import {
   SetField,
   StringField,
   TypeDataField,
+  TypeDataField5e,
   TypedObjectField,
   TypedSchemaField
 } from "./fake-system.ts";
@@ -163,5 +164,40 @@ describe("configKeys", () => {
         class: { label: "Class Feature", subtypes: { channelDivinity: "Channel Divinity" } }
       }
     );
+  });
+});
+
+describe("TYPED_ENTRY_SCHEMAS", () => {
+  const attack = new SchemaField({ type: new StringField() });
+  const terrain = new SchemaField({ multiplier: new StringField() });
+  const models: Record<string, { schema: SchemaField }> = {
+    attack: { schema: attack },
+    difficultTerrain: { schema: terrain }
+  };
+  const field = new TypeDataField5e({ getModel: (type: string) => models[type] });
+  const { TypeDataField5e: schemaFor, AdvancementDataField: fixed } = TYPED_ENTRY_SCHEMAS;
+
+  it("takes the data model of an entry's own type, and of the behavior a config lies in", () => {
+    assert.equal(schemaFor!({ type: "attack" }, field), attack);
+    assert.equal(schemaFor!({ multiplier: 2 }, field, "difficultTerrain"), terrain);
+    assert.equal(schemaFor!({ type: "attack" }, field, "difficultTerrain"), terrain);
+  });
+
+  it("answers nothing for a type without a model, for an entry that is no object, and for a field without models", () => {
+    assert.deepEqual(
+      [
+        schemaFor!({ type: "ghost" }, field),
+        schemaFor!(null, field),
+        schemaFor!("attack", field),
+        schemaFor!({ type: "attack" }, {})
+      ],
+      [undefined, undefined, undefined, undefined]
+    );
+  });
+
+  it("takes the one model an advancement's configuration has, whatever the entry says", () => {
+    const configuration = { getModelForType: () => ({ schema: terrain }) };
+    assert.equal(fixed!({ type: "attack" }, configuration), terrain);
+    assert.equal(fixed!({}, { getModelForType: () => undefined }), undefined);
   });
 });

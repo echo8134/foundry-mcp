@@ -3,7 +3,7 @@ import { MethodError } from "./errors.mjs";
 import { fieldProblems } from "./field-check.mjs";
 import { resolveFolderPath } from "./folders.mjs";
 import { canonicalNodes, canonicalStyle } from "./html.mjs";
-import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
+import { TYPED_ENTRY_SCHEMAS } from "./schema.mjs";
 
 export const timing = { textureLoadMs: 30_000 };
 
@@ -43,6 +43,19 @@ export function loadTexture(src) {
         `The image ${src} did not load within ${Math.round(timing.textureLoadMs / 1000)} seconds.`
       )
   );
+}
+
+/**
+ * The names of the scenes a world actor has tokens on, which its deletion would leave without an actor. concreteOnly
+ * leaves out tokens that are not stored in their scene, such as the ones place_tokens builds to check its input
+ * (client/documents/actor.mjs:589-597).
+ * @param {any} actor
+ * @param {(token: any) => boolean} [going] whether a token is deleted by the same call, and so needs no actor
+ * @returns {string[]}
+ */
+export function scenesWithTokensOf(actor, going = () => false) {
+  const staying = actor.getDependentTokens({ concreteOnly: true }).filter((token) => !going(token));
+  return [...new Set(staying.map((token) => token.parent.name))];
 }
 
 /** The cleaning an update gets: with the migrations and the model's own step (client/data/client-backend.mjs:231-235). */

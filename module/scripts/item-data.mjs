@@ -19,19 +19,6 @@ export const TYPED_MAPS = Object.freeze([
   { key: "advancement", noun: "advancement", document: "Advancement" }
 ]);
 
-/**
- * The data model of an entry below a dnd5e TypeDataField5e, for the schema check, by the class of the field. An
- * advancement's configuration and value take the model of their advancement type whatever the entry says, and any
- * other entry the model of its own type, or of the behavior it is the config of (dnd5e
- * module/data/fields/type-data-field.mjs:37-39, advancement-data-field.mjs:17-19).
- * @type {Readonly<Record<string, import("./field-check.mjs").SchemaFor>>}
- */
-export const TYPED_ENTRY_SCHEMAS = Object.freeze({
-  AdvancementDataField: (_entry, field) => field.getModelForType?.()?.schema,
-  TypeDataField5e: (entry, field, heldType) =>
-    field.getModelForType?.(heldType ?? (isPlainObject(entry) ? entry.type : undefined))?.schema
-});
-
 /** @param {unknown} reference @returns {unknown} an activity's reference to an effect of its item, with a label as its id */
 const withEffectId = (reference) =>
   isPlainObject(reference) && typeof reference._id === "string"

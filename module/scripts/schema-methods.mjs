@@ -1,7 +1,6 @@
 // get_schema: the stored fields of any document type, read from the classes of the running Foundry and of its system.
 
-import { checkType } from "./actor-methods.mjs";
-import { subtypesOf } from "./document-access.mjs";
+import { checkType, subtypesOf } from "./document-access.mjs";
 import { DOCUMENT_TYPES, SCHEMA_EXTRAS } from "./document-types.mjs";
 import { MethodError } from "./errors.mjs";
 import { CONFIG_TABLES, configKeys, describeField, selectPath } from "./schema.mjs";

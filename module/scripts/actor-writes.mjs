@@ -1,10 +1,11 @@
 import { derivedValues, withCreateDefaults } from "./actor-data.mjs";
-import { actorFolderPath, checkType, resolveActor, systemTypes } from "./actor-methods.mjs";
+import { actorFolderPath, resolveActor } from "./actor-methods.mjs";
 import { dropAt, entriesToRemove, hasPath, updateFor, writeOutcome } from "./data-diff.mjs";
+import { checkType, systemTypes } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
 import { hasEmbedded, planEmbedded, writeEmbedded } from "./item-writes.mjs";
 import { claimNamed, FLAG_SCOPE, isManaged } from "./scope.mjs";
-import { createMissingFolders, findFolder } from "./world.mjs";
+import { createMissingFolders, findFolder, scenesWithTokensOf } from "./world.mjs";
 import {
   changedInStorage,
   checkAsked,
@@ -284,19 +285,6 @@ export async function ensureActor(request) {
     ),
     derived: derivedValues(actor.system)
   };
-}
-
-/**
- * The names of the scenes a world actor has tokens on, which its deletion would leave without an actor. concreteOnly
- * leaves out tokens that are not stored in their scene, such as the ones place_tokens builds to check its input
- * (client/documents/actor.mjs:589-597).
- * @param {any} actor
- * @param {(token: any) => boolean} [going] whether a token is deleted by the same call, and so needs no actor
- * @returns {string[]}
- */
-export function scenesWithTokensOf(actor, going = () => false) {
-  const staying = actor.getDependentTokens({ concreteOnly: true }).filter((token) => !going(token));
-  return [...new Set(staying.map((token) => token.parent.name))];
 }
 
 /** Every check of a deletion, and the world actors it deletes. Reads only. */
