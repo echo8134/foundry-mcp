@@ -21,7 +21,9 @@ const HIGH_STAKES =
   "by name whatever the role says, such as MACRO_SCRIPT (to write script macros) and FILES_UPLOAD. ownership decides " +
   "which players see and change a document (by user id, and default: 0 none, 1 limited, 2 observer, 3 owner): a " +
   "wrong level shows players what the Gamemaster prepared in secret. A ChatMessage is shown to every connected " +
-  "player the moment it is created, unless it has whisper. The command of a Macro of the type script is code: it " +
+  "player the moment it is created, unless it has whisper, and its HTML may hold an iframe whose page runs " +
+  "scripts in a sandbox: cut off from the Foundry session, but able to show players anything, a fake login form " +
+  "too. The command of a Macro of the type script is code: it " +
   "runs in the browser of whoever runs the macro, a player's too, and a user's hotbar puts macros under that user's " +
   "number keys. Some modules run code they find in flags, an item macro for example, so a flag written for such a " +
   "module can be code as well. Code that Foundry runs by itself is not written at all: a RegionBehavior of the type " +
