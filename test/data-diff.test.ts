@@ -481,6 +481,17 @@ describe("updateFor and writeOutcome", () => {
     });
   });
 
+  it("reports a value that is never handed back by whether Foundry took the write, and still sends it", () => {
+    const asked = { wanted: { name: "Hob", password: "s3cret" }, unseen: ["password"] };
+    const after = { ...stored(), name: "Hob" };
+    assert.deepEqual(updateFor(asked, stored(), GONE).update, { name: "Hob", password: "s3cret" });
+    assert.deepEqual(writeOutcome(asked, stored(), after), { changed: ["name", "password"], unapplied: [] });
+    assert.deepEqual(writeOutcome(asked, stored(), stored(), false), {
+      changed: [],
+      unapplied: ["name", "password"]
+    });
+  });
+
   it("reports a wanted leaf Foundry stored otherwise as changed and as unapplied at once", () => {
     const after = stored();
     after.system.hp.value = 5;

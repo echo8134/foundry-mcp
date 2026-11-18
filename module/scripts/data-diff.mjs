@@ -15,8 +15,8 @@
 /**
  * @typedef {{wanted: Record<string, unknown>, remove?: readonly string[], same?: SameLeaf, unseen?: readonly string[]}} Asked
  *   what a write is to bring about: the wanted data, the dot paths of the entries to remove, the leaves that may say
- *   the same in other words, and the dot paths of the wanted values that are written and never handed back, such as a
- *   password
+ *   the same in other words, and the keys of the wanted data whose values are written and never handed back, such as
+ *   a password
  */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -361,21 +361,6 @@ export function updateFor({ wanted, remove = [], same }, stored, deletion) {
 }
 
 /**
- * @param {unknown} data
- * @param {readonly string[]} keys the keys of a dot path
- * @returns {unknown} the data without what lies at the path, the given object left as it is
- */
-function without(data, [key, ...rest]) {
-  if (!isPlainObject(data) || key === undefined) return data;
-  return Object.fromEntries(
-    Object.entries(data).flatMap(([name, value]) => {
-      if (name !== key) return [[name, value]];
-      return rest.length > 0 ? [[name, without(value, rest)]] : [];
-    })
-  );
-}
-
-/**
  * @param {Asked} asked
  * @param {unknown} before the stored data before the write, a copy
  * @param {unknown} after the stored data after it
@@ -385,9 +370,7 @@ function without(data, [key, ...rest]) {
  */
 export function writeOutcome({ wanted, remove = [], same, unseen = [] }, before, after, stored = true) {
   const asked = [...new Set(remove)];
-  const seen = /** @type {Record<string, unknown>} */ (
-    unseen.reduce((data, path) => without(data, path.split(".")), /** @type {unknown} */ (wanted))
-  );
+  const seen = Object.fromEntries(Object.entries(wanted).filter(([key]) => !unseen.includes(key)));
   return {
     changed: [
       ...changedPaths(seen, before, after),
