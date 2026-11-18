@@ -448,6 +448,30 @@ describe("get_document", () => {
     });
   });
 
+  it("reads an adventure with the documents it holds, each checked by its own type, and takes them back unchanged", async () => {
+    const adventure = world.addDocument(
+      "Adventure",
+      {
+        name: "Lost Mine",
+        actors: [
+          { name: "Goblin", type: "npc", system: { details: { cr: 0.25 } }, items: [{ name: "Bite", type: "feat" }] }
+        ],
+        scenes: [{ name: "Cave", regions: [{ name: "Pit", behaviors: [{ type: "pauseGame" }] }] }]
+      },
+      { pack: "world.adventures" }
+    );
+    const result = await get(adventure.uuid);
+    assert.deepEqual([result.documentName, result.pack, result.embedded], ["Adventure", "world.adventures", {}]);
+    assert.deepEqual(
+      [result.data.actors[0].name, result.data.actors[0].system, result.data.actors[0].items],
+      ["Goblin", { details: { cr: 0.25 } }, [{ name: "Bite", type: "feat" }]]
+    );
+    assert.deepEqual(result.data.scenes[0].regions, [{ name: "Pit", behaviors: [{ type: "pauseGame" }] }]);
+    const taken = await viaTool("update_documents", { documents: [{ uuid: adventure.uuid, data: result.data }] });
+    assert.deepEqual(taken.documents, [{ uuid: adventure.uuid, changed: [], unapplied: [] }]);
+    assert.deepEqual(world.log.documentWrites, []);
+  });
+
   it("lists at most 200 embedded documents of a type, and says how many there are", async () => {
     const pages = Array.from({ length: 203 }, (_, i) => ({ name: `Page ${i}` }));
     const entry = world.addDocument("JournalEntry", { name: "Long", pages });

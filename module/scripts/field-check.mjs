@@ -84,10 +84,10 @@ const isTypeData = (field) =>
   field !== null && typeof field === "object" && classChain(field).includes("TypeDataField");
 
 /**
- * The walk that goes on in the data of one embedded document, or null where there is nothing to walk. Its type is the
- * one the data gives, or else the one Foundry would fill in: the initial value of the `type` field of its class
- * (common/data/fields.mjs:4285-4310).
- * @param {any} schema the schema of the embedded document class
+ * The walk that goes on in the data of one document given inside another, or null where there is nothing to walk. Its
+ * type is the one the data gives, or else the one Foundry would fill in: the initial value of the `type` field of its
+ * class (common/data/fields.mjs:4285-4310).
+ * @param {any} schema the schema of the class of that document
  * @param {unknown} documentName
  * @param {unknown} value
  * @param {string} path
@@ -151,6 +151,17 @@ const STRUCTURES = Object.freeze({
   EmbeddedDocumentField: (field, value, path, walk) => {
     if (!walk.embedded) return checkSchema(field, value, path, walk);
     const inner = embeddedWalk(field, field.model?.documentName, value, path, walk);
+    if (inner) checkSchema(field, value, path, inner);
+  },
+  // A document held as data, as an adventure holds its actors in a set of such fields
+  // (common/documents/adventure.mjs:41-50): the field is the schema of the class it names as `model`
+  // (common/data/fields.mjs:2824-2844). Each one has a type of its own, and the embedded documents inside it are data
+  // like the rest of it, whatever the walk was asked. A model that is no document, such as an actor's prototype
+  // token, is a plain schema.
+  EmbeddedDataField: (field, value, path, walk) => {
+    const documentName = field.model?.documentName;
+    if (typeof documentName !== "string") return checkSchema(field, value, path, walk);
+    const inner = embeddedWalk(field, documentName, value, path, { ...walk, embedded: true });
     if (inner) checkSchema(field, value, path, inner);
   },
   ArrayField: (field, value, path, walk) => {

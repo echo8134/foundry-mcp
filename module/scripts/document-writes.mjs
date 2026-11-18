@@ -2,7 +2,7 @@
 // writes the plan. A plan is made once before the call waits for its turn, to refuse a bad request at once, and again
 // when its turn comes: a write queued before it may have changed what the plan was made on.
 
-import { dropAt, hasPath, isPlainObject, pickData, sameData, updateFor, writeOutcome } from "./data-diff.mjs";
+import { diffData, dropAt, hasPath, isPlainObject, pickData, sameData, updateFor, writeOutcome } from "./data-diff.mjs";
 import {
   byPosition,
   classOf,
@@ -47,6 +47,16 @@ function refuseUnwritten(documentName, where = "") {
 
 function refuseRuled(sentence, where = "") {
   if (sentence) throw refuse(sentence, where);
+}
+
+/**
+ * What holds for a new document of a name holds for each document given inside the data of another, which is created
+ * with it, or written with the field that holds it as the scenes of an adventure are.
+ */
+function refuseRuledWithin(cls, data, walk, where) {
+  for (const { documentName, path, data: within } of documentsWithin(cls.schema, data, walk)) {
+    refuseRuled(rulesOf(documentName).create?.(within), `${where}${path}: `);
+  }
 }
 
 /** The flags of a document a create has just made. */
@@ -102,9 +112,7 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const asked = withoutOwnFlags(given, cls, where);
   const type = typeOfNew(cls, asked, where);
   refuseRuled(rulesOf(name).create?.(asked), where);
-  for (const { documentName, path, data } of documentsWithin(cls.schema, asked, walkOf(type, true))) {
-    refuseRuled(rulesOf(documentName).create?.(data), `${where}${path}: `);
-  }
+  refuseRuledWithin(cls, asked, walkOf(type, true), where);
   checkAsked(kind, asked, [], type, where, true);
   const data = asBridgeMade(asked, cls);
   let built;
@@ -220,7 +228,11 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   checkKeptAsGiven(asked, wanted, where);
   if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
   checkRemoval(kind, document, remove, where);
-  return { document, write: { ...writeOf(kind, wanted, remove, document.type), unseen: secretsGiven(name, wanted) } };
+  const write = writeOf(kind, wanted, remove, document.type);
+  // Asked of what the update writes: a field given as it is stored is no part of it.
+  const { changes } = diffData(wanted, document._source, write.same);
+  refuseRuledWithin(cls, changes, walkOf(document.type), where);
+  return { document, write: { ...write, unseen: secretsGiven(name, wanted) } };
 }
 
 async function planChanges({ documents: entries }) {

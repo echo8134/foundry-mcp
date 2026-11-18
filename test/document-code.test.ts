@@ -78,6 +78,58 @@ describe("code that Foundry runs by itself", () => {
     });
   }
 
+  it("writes no behavior that runs code into the scenes an adventure holds, on a create or a change", async () => {
+    const trapped = (behavior: Record<string, unknown>) => [
+      { name: "Cave", regions: [{ name: "Pit", behaviors: [behavior] }] }
+    ];
+    world.addPack("world.adventures", "Adventure");
+    for (const behavior of [SCRIPT, MACRO]) {
+      await assert.rejects(
+        create({
+          type: "Adventure",
+          pack: "world.adventures",
+          documents: [{ name: "Lost Mine", scenes: trapped(behavior) }]
+        }),
+        refused(
+          "invalid_params",
+          new RegExp(
+            `^documents\\[0\\]: scenes\\.0\\.regions\\.0\\.behaviors\\.0: These tools create no region behavior of the type ${behavior.type}`
+          )
+        )
+      );
+    }
+    const made = await create({
+      type: "Adventure",
+      pack: "world.adventures",
+      documents: [{ name: "Lost Mine", scenes: trapped(PAUSE) }]
+    });
+    assert.equal(made.created, 1);
+    const { uuid } = made.documents[0];
+    await assert.rejects(
+      update({ uuid, data: { name: "Found Mine", scenes: trapped(SCRIPT) } }),
+      refused(
+        "invalid_params",
+        /^documents\[0\]: scenes\.0\.regions\.0\.behaviors\.0: These tools create no region behavior of the type executeScript: .*Nothing was written\.$/
+      )
+    );
+    assert.deepEqual(writes(world), ["create Adventure"]);
+    const calmer = await update({ uuid, data: { scenes: trapped({ type: "pauseGame", system: { once: false } }) } });
+    assert.deepEqual(calmer.documents[0].changed, ["scenes"]);
+  });
+
+  it("takes back an adventure that holds a script behavior written in Foundry, and changes its other fields", async () => {
+    const adventure = world.addDocument(
+      "Adventure",
+      { name: "Lost Mine", scenes: [{ name: "Cave", regions: [{ name: "Pit", behaviors: [SCRIPT] }] }] },
+      { pack: "world.adventures" }
+    );
+    const { data } = await get(adventure.uuid);
+    assert.equal(data.scenes[0].regions[0].behaviors[0].system.source, "game.paused = true");
+    const renamed = await update({ uuid: adventure.uuid, data: { ...data, name: "Found Mine" } });
+    assert.deepEqual(renamed.documents[0].changed, ["name"]);
+    assert.deepEqual(world.log.documentWrites[0]!.data, [{ name: "Found Mine" }]);
+  });
+
   it("creates a region behavior that runs no code, by itself and with its region", async () => {
     const alone = await create({ type: "RegionBehavior", parent: region.uuid, documents: [PAUSE] });
     assert.equal(alone.created, 1);

@@ -15,6 +15,7 @@ import {
   DocumentTypeField,
   DocumentUUIDField,
   EmbeddedCollectionField,
+  EmbeddedDataField,
   FilePathField,
   ForeignDocumentField,
   HTMLField,
@@ -124,6 +125,19 @@ const ownership = () => new DocumentOwnershipField({ initial: () => ({ default: 
 const named = () => new StringField({ required: true, blank: false });
 const id = () => new DocumentIdField({ nullable: true, initial: null });
 const events = () => new SetField(new StringField());
+
+/**
+ * The documents an adventure holds as data: a set of a field that is the schema of their class, which it names as
+ * `model` (common/documents/adventure.mjs:41-50, common/data/fields.mjs:2824-2844).
+ */
+function held(documentName: string) {
+  const field = new EmbeddedDataField({});
+  field.model = { documentName };
+  Object.defineProperty(field, "fields", {
+    get: () => (globalThis as Record<string, any>).CONFIG[documentName].documentClass.schema.fields
+  });
+  return new SetField(field);
+}
 
 /**
  * The fields of Foundry's own documents that the tests use, with their kinds and initial values
@@ -268,7 +282,14 @@ const DEFINITIONS: Definition[] = [
   // Exists only in a compendium pack (common/constants.mjs:411-442).
   {
     name: "Adventure",
-    fields: { _id: id(), name: named(), folder: folder(), flags: new DocumentFlagsField() },
+    fields: {
+      _id: id(),
+      name: named(),
+      actors: held("Actor"),
+      scenes: held("Scene"),
+      folder: folder(),
+      flags: new DocumentFlagsField()
+    },
     indexFields: ["_id", "name", "folder"]
   },
   // A token's own changes to its actor, one embedded document of the token (common/documents/actor-delta.mjs:43-56).

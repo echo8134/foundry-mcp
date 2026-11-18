@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  documentsWithin,
   elementIdArrays,
   explainFieldProblems,
   explainRemovalProblems,
@@ -302,6 +303,59 @@ describe("fieldProblems with the embedded documents given inside the data", () =
     assert.equal(
       sameHtml(entry, data, (html) => html.toLowerCase())("pages.0.text.content", "<P>a</P>", "<p>a</p>"),
       false
+    );
+  });
+});
+
+describe("fieldProblems of documents held as data", () => {
+  const effect = { documentName: "ActiveEffect", schema: new SchemaField({ name: new StringField() }) };
+  const actor = {
+    documentName: "Actor",
+    schema: new SchemaField({
+      name: new StringField(),
+      type: new StringField(),
+      system: new TypeDataField(),
+      effects: new EmbeddedCollectionField(effect)
+    })
+  };
+  const held = (model: { documentName?: string; schema: SchemaField }) =>
+    Object.assign(new EmbeddedDataField(model.schema.fields), { model });
+  const adventure = new SchemaField({
+    name: new StringField(),
+    actors: new SetField(held(actor)),
+    token: held({ schema: new SchemaField({ name: new StringField() }) })
+  });
+  const problems = (data: Record<string, unknown>, options = {}) =>
+    fieldProblems(adventure, data, options).map(({ path, problem }) => [path, problem]);
+
+  it("checks each one by the type it names, though the document that holds them has none", () => {
+    assert.deepEqual(problems({ name: "Mine", actors: [{ name: "Goblin", type: "npc", system: { cr: 1 } }] }), []);
+    assert.deepEqual(problems({ actors: [{ type: "npc", system: { cr: 1, ac: 2 } }, { nmae: "Ogre" }] }), [
+      ["actors.0.system.ac", "unknown"],
+      ["actors.1.nmae", "unknown"]
+    ]);
+    assert.deepEqual(problems({ actors: [{ name: "Bare", system: { cr: 1 } }] }), [["actors.0.system", "model"]]);
+  });
+
+  it("takes the embedded documents inside one as its data, whether or not the walk follows embedded documents", () => {
+    const data = { actors: [{ type: "npc", effects: [{ name: "Lit", glow: 1 }] }] };
+    for (const options of [{}, { embedded: true }]) {
+      assert.deepEqual(problems(data, options), [["actors.0.effects.0.glow", "unknown"]]);
+    }
+  });
+
+  it("reads a model that is no document as a plain schema", () => {
+    assert.deepEqual(problems({ token: { name: "Goblin", hp: 3 } }), [["token.hp", "unknown"]]);
+  });
+
+  it("lists each one and the embedded documents inside it, with where they lie", () => {
+    const data = { actors: [{ type: "npc", effects: [{ name: "Lit" }] }], token: { name: "Goblin" } };
+    assert.deepEqual(
+      documentsWithin(adventure, data).map(({ documentName, path }) => [documentName, path]),
+      [
+        ["Actor", "actors.0"],
+        ["ActiveEffect", "actors.0.effects.0"]
+      ]
     );
   });
 });
