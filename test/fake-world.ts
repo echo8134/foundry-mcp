@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { Collection, type EmbeddedWrite, fakeActors } from "./fake-actors.ts";
-import { absoluteUuid, DOCUMENT_PLACES, type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
+import { DOCUMENT_PLACES, type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
 import { fakeDocument } from "./fake-dom.ts";
 import { applyChanges, cleanValue, cloneChanges, ForcedDeletion, merge, validationErrors } from "./fake-model.ts";
+import { absoluteUuid } from "./fake-regions.ts";
 import { sceneSchema, systemConfig } from "./fake-system.ts";
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
