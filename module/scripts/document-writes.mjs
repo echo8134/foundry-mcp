@@ -18,7 +18,7 @@ import {
   subtypesOf,
   targetOf
 } from "./document-access.mjs";
-import { rulesOf, secretsGiven, withoutSecrets } from "./document-rules.mjs";
+import { rulesOf, secretsGiven } from "./document-rules.mjs";
 import { MethodError } from "./errors.mjs";
 import { documentsWithin } from "./field-check.mjs";
 import { withoutStoredFlag } from "./item-data.mjs";
@@ -120,7 +120,8 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const wanted = pickData(byPosition(built.toObject(), cls), shape);
   checkKeptAsGiven(shape, wanted, where);
   await checkImage(wanted.img, where);
-  return { data, write: writeOf(kind, withoutSecrets(name, wanted), [], type, asked, embeddedSchemas) };
+  const write = writeOf(kind, wanted, [], type, asked, embeddedSchemas);
+  return { data, write: { ...write, unseen: secretsGiven(name, wanted) } };
 }
 
 async function planCreations(request) {
@@ -220,13 +221,7 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   checkKeptAsGiven(asked, wanted, where);
   if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
   checkRemoval(kind, document, remove, where);
-  return {
-    document,
-    write: writeOf(kind, wanted, remove, document.type),
-    // What the stored data shows of the write. A secret is written and never handed back, so it shows nothing.
-    shown: writeOf(kind, withoutSecrets(name, wanted), remove, document.type),
-    secrets: secretsGiven(name, wanted)
-  };
+  return { document, write: { ...writeOf(kind, wanted, remove, document.type), unseen: secretsGiven(name, wanted) } };
 }
 
 async function planChanges({ documents: entries }) {
@@ -250,11 +245,20 @@ export async function prepareChanges(request) {
   return request;
 }
 
-/** What the stored data shows after a write that threw: Foundry may have applied a part of it. */
-function describeWritten(plans, before) {
-  const written = plans.flatMap(({ document, shown }, index) => {
-    const { changed } = writeOutcome(shown, before[index], document._source);
-    return changed.length > 0 ? [`${document.uuid} (${changed.join(", ")})`] : [];
+/**
+ * What was written when an update threw, from the stored data: Foundry may have applied a part of it. `stored` says
+ * of each entry before the one that threw whether Foundry took its update. A value that is never handed back, such as
+ * a password, is named with the entry that wrote it, and of the entry that threw nothing tells whether it was written.
+ */
+function describeWritten(plans, before, stored) {
+  const written = plans.flatMap(({ document, write }, index) => {
+    const { changed } = writeOutcome(write, before[index], document._source, stored[index] ?? false);
+    const unknown =
+      index === stored.length
+        ? write.unseen.map((path) => `${path}, which cannot be read back and may have been written`)
+        : [];
+    const all = [...changed, ...unknown];
+    return all.length > 0 ? [`${document.uuid} (${all.join(", ")})`] : [];
   });
   return written.length > 0
     ? `Changed in the stored data: ${written.join("; ")}.`
@@ -265,24 +269,20 @@ export async function updateDocuments(request) {
   const plans = await planChanges(request);
   // toObject, not structuredClone: measured, the stored data of some documents cannot be structured-cloned.
   const before = plans.map(({ document }) => document.toObject());
+  const stored = [];
   const documents = [];
-  for (const [index, { document, write, shown, secrets }] of plans.entries()) {
+  for (const [index, { document, write }] of plans.entries()) {
     const { update, writes } = updateFor(write, document._source, _del);
-    let stored = false;
-    if (writes) {
-      try {
-        // An update resolves without the document when a hook refuses it (client/data/client-backend.mjs:237-241).
-        stored = (await document.update(update)) !== undefined;
-      } catch (error) {
-        throw new MethodError(
-          "foundry_error",
-          `documents[${index}]: Foundry failed while updating ${document.uuid} (${error.message}). ${describeWritten(plans, before)} Running the call again writes what still differs.`
-        );
-      }
+    try {
+      // An update resolves without the document when a hook refuses it (client/data/client-backend.mjs:237-241).
+      stored.push(writes && (await document.update(update)) !== undefined);
+    } catch (error) {
+      throw new MethodError(
+        "foundry_error",
+        `documents[${index}]: Foundry failed while updating ${document.uuid} (${error.message}). ${describeWritten(plans, before, stored)} Running the call again writes what still differs.`
+      );
     }
-    const { changed, unapplied } = writeOutcome(shown, before[index], document._source);
-    (stored ? changed : unapplied).push(...secrets);
-    documents.push({ uuid: document.uuid, changed, unapplied });
+    documents.push({ uuid: document.uuid, ...writeOutcome(write, before[index], document._source, stored[index]) });
   }
   return { documents };
 }

@@ -252,6 +252,27 @@ describe("update_documents", () => {
       assert.deepEqual(result.documents, [{ uuid: ada.uuid, changed: [], unapplied: ["password"] }]);
     });
 
+    it("names a password it wrote, and never its value, when Foundry fails on a later entry or on that entry", async () => {
+      world.control.documentError = (action, name) =>
+        action === "update" && name === "JournalEntryPage" ? "socket closed" : undefined;
+      await assert.rejects(
+        update({ uuid: ada.uuid, data: { password: "s3cret" } }, { uuid: page.uuid, data: { name: "Creed" } }),
+        (error: unknown) =>
+          refused("foundry_error", /Changed in the stored data: User\.\w+ \(password\); \S+ \(name\)\./)(error) &&
+          !(error as Error).message.includes("s3cret")
+      );
+      world.control.documentError = (action, name) =>
+        action === "update" && name === "User" ? "socket closed" : undefined;
+      await assert.rejects(
+        update({ uuid: ada.uuid, data: { password: "s3cret", role: 2 } }),
+        (error: unknown) =>
+          refused(
+            "foundry_error",
+            /Changed in the stored data: User\.\w+ \(role, password, which cannot be read back and may have been written\)\./
+          )(error) && !(error as Error).message.includes("s3cret")
+      );
+    });
+
     it("refuses a blank or padded password, its removal, and a salt", async () => {
       const refusedChanges: [Record<string, unknown>, RegExp][] = [
         [

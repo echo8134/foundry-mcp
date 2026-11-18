@@ -13,9 +13,10 @@
  *   say the same, such as two spellings of one HTML content
  */
 /**
- * @typedef {{wanted: Record<string, unknown>, remove?: readonly string[], same?: SameLeaf}} Asked what a write is to
- *   bring about: the wanted data, the dot paths of the entries to remove, and the leaves that may say the same in other
- *   words
+ * @typedef {{wanted: Record<string, unknown>, remove?: readonly string[], same?: SameLeaf, unseen?: readonly string[]}} Asked
+ *   what a write is to bring about: the wanted data, the dot paths of the entries to remove, the leaves that may say
+ *   the same in other words, and the dot paths of the wanted values that are written and never handed back, such as a
+ *   password
  */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -360,19 +361,43 @@ export function updateFor({ wanted, remove = [], same }, stored, deletion) {
 }
 
 /**
+ * @param {unknown} data
+ * @param {readonly string[]} keys the keys of a dot path
+ * @returns {unknown} the data without what lies at the path, the given object left as it is
+ */
+function without(data, [key, ...rest]) {
+  if (!isPlainObject(data) || key === undefined) return data;
+  return Object.fromEntries(
+    Object.entries(data).flatMap(([name, value]) => {
+      if (name !== key) return [[name, value]];
+      return rest.length > 0 ? [[name, without(value, rest)]] : [];
+    })
+  );
+}
+
+/**
  * @param {Asked} asked
  * @param {unknown} before the stored data before the write, a copy
  * @param {unknown} after the stored data after it
+ * @param {boolean} [stored] whether Foundry took the write, which is all that tells what became of an unseen value
  * @returns {{changed: string[], unapplied: string[]}} the paths whose stored value is another one, or gone, after the
  *   write, and the paths that are still not as asked. A path can be in both.
  */
-export function writeOutcome({ wanted, remove = [], same }, before, after) {
+export function writeOutcome({ wanted, remove = [], same, unseen = [] }, before, after, stored = true) {
   const asked = [...new Set(remove)];
+  const seen = /** @type {Record<string, unknown>} */ (
+    unseen.reduce((data, path) => without(data, path.split(".")), /** @type {unknown} */ (wanted))
+  );
   return {
     changed: [
-      ...changedPaths(wanted, before, after),
-      ...asked.filter((path) => hasPath(before, path) && !hasPath(after, path))
+      ...changedPaths(seen, before, after),
+      ...asked.filter((path) => hasPath(before, path) && !hasPath(after, path)),
+      ...(stored ? unseen : [])
     ],
-    unapplied: [...diffData(wanted, after, same).paths, ...asked.filter((path) => hasPath(after, path))]
+    unapplied: [
+      ...diffData(seen, after, same).paths,
+      ...asked.filter((path) => hasPath(after, path)),
+      ...(stored ? [] : unseen)
+    ]
   };
 }
