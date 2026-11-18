@@ -2860,6 +2860,15 @@ try {
           [0.5, 0.5, 100, 0, "width", 1, 1, 0, { src: null }, { levels: [] }],
           "how the upper level's images are placed"
         );
+
+        const initialOf = async () =>
+          (await tool(client, "get_scene", { sceneId: levelSceneId })).levels.find((level) => level.initial).name;
+        for (const level of [tower, ground]) {
+          await tool(client, "update_documents", {
+            documents: [{ uuid: sceneUuid, data: { initialLevel: level.id } }]
+          });
+          same(await initialOf(), level.name, "the initial level after update_documents set it");
+        }
       }
     );
 
