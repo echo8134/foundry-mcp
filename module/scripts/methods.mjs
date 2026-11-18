@@ -13,10 +13,11 @@ import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
 import { lightData, lightFields } from "./light-data.mjs";
-import { levelFields } from "./region-data.mjs";
-import { prepareRegions, regionFields, syncRegions } from "./region-methods.mjs";
+import { regionFields } from "./region-data.mjs";
+import { prepareRegions, syncRegions } from "./region-methods.mjs";
 import {
   canvasOverflow,
+  levelFields,
   planSceneChanges,
   scenesNamed,
   touchesGeometry,

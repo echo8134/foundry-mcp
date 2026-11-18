@@ -1,9 +1,11 @@
 // @ts-check
-// A scene's levels and the shapes of its regions, as the tools give and take them. Foundry stores a shape in canvas
+// The regions of a scene and their shapes, as the tools give and take them. Foundry stores a shape in canvas
 // pixels (common/data/data.mjs:214-560). A tool gives and takes it in the frame of the call, as it does a wall.
 
 import { isPlainObject } from "./data-diff.mjs";
 import { canvasToFrame, frameToCanvas } from "./geometry.mjs";
+import { systemAsRead } from "./region-references.mjs";
+import { isManaged } from "./scope.mjs";
 
 /** @typedef {import("./geometry.mjs").Frame} Frame */
 /** @typedef {import("./geometry.mjs").Point} Point */
@@ -56,7 +58,7 @@ const specOf = (shape) =>
  * One way between the two coordinate systems: where a point goes, what a length along each axis is multiplied by, and
  * what is kept of a length and of a polygon's points.
  * @typedef {{point: (point: Point) => Point, sx: number, sy: number, length: (value: number) => number,
- *   points: (points: any[], point: (point: Point) => Point) => unknown[]}} Way
+ *   points: (points: any[]) => unknown[]}} Way
  */
 
 /** @param {readonly number[]} flat x and y in turn @returns {Point[]} */
@@ -104,7 +106,7 @@ function convert(shape, way) {
     scale(spec.sides[1], second);
   }
   for (const key of [...(spec.radii ?? []), ...(spec.reach ?? [])]) scale(key, (way.sx + way.sy) / 2);
-  if (spec.points) out.points = way.points(shape.points, way.point);
+  if (spec.points) out.points = way.points(shape.points);
   if (spec.origin && shape.origin) {
     const [x, y] = way.point([shape.origin.x, shape.origin.y]);
     out.origin = { x, y };
@@ -121,12 +123,14 @@ function convert(shape, way) {
  * @returns {Shape}
  */
 export function shapeInFrame(stored, frame, rect) {
+  /** @param {Point} point */
+  const inFrame = (point) => canvasToFrame(point, frame, rect);
   return convert(stored, {
-    point: (point) => canvasToFrame(point, frame, rect),
+    point: inFrame,
     sx: frame.width / rect.width,
     sy: frame.height / rect.height,
     length: (value) => value,
-    points: (flat, point) => pairsOf(flat).map(point)
+    points: (flat) => pairsOf(flat).map(inFrame)
   });
 }
 
@@ -207,35 +211,51 @@ function storedCorners(pairs, point) {
 export function shapeOnCanvas(given, frame, rect) {
   const unusable = inputProblems(given);
   if (unusable.length > 0) return { shape: given, problems: unusable };
+  /** @param {Point} point */
+  const onCanvas = (point) => frameToCanvas(point, frame, rect);
   const shape = convert(given, {
-    point: (point) => frameToCanvas(point, frame, rect),
+    point: onCanvas,
     sx: rect.width / frame.width,
     sy: rect.height / frame.height,
     length: Math.round,
-    points: storedCorners
+    points: (pairs) => storedCorners(pairs, onCanvas)
   });
   return { shape, problems: canvasProblems(shape) };
 }
 
 /**
- * What get_scene says of a level, from its stored data, where an elevation without a bound is null
- * (common/documents/level.mjs:74-116, ExtendedNumberField at common/data/fields.mjs:1655).
- * @param {Record<string, any>} level
- * @param {string | undefined} initialId the id of the scene's initial level
+ * What get_scene says of a region, from its stored data (common/documents/region.mjs:48-90): the shapes in the frame,
+ * an elevation without a bound as null, a restriction only while it is enabled and an attachment only to a token.
+ * Left out is what places no region and decides nothing in play: the lock and the highlighting of the region layer,
+ * the ownership, and the shape constraints Foundry works out itself. A behavior's name is the stored one: the
+ * document's own is the label of its type where none is stored (client/documents/region-behavior.mjs:76-78).
+ * @param {any} region
+ * @param {Frame} frame
+ * @param {Rect} rect
  * @returns {Record<string, any>}
  */
-export function levelFields(level, initialId) {
-  const { sort, elevation, background, foreground, textures, visibility } = level._source;
+export function regionFields(region, frame, rect) {
+  const { name, color, shapes, elevation, levels, restriction, attachment, visibility, hidden } = region._source;
   return {
-    id: level.id,
-    name: level.name,
-    sort,
-    initial: level.id === initialId,
-    elevation: { bottom: elevation.bottom, top: elevation.top },
-    background: { src: background.src, color: background.color },
-    foreground: { src: foreground.src },
-    textures: { ...textures },
-    visibility: { levels: [...visibility.levels] }
+    id: region.id,
+    name,
+    levels: [...levels],
+    elevation: { ...elevation },
+    shapes: shapes.map((/** @type {Shape} */ shape) => shapeInFrame(shape, frame, rect)),
+    color,
+    visibility,
+    hidden,
+    ...(restriction.enabled && { restriction: { ...restriction } }),
+    ...(attachment.token && { attachment: { token: attachment.token } }),
+    behaviors: region.behaviors.map((/** @type {any} */ behavior) => ({
+      id: behavior.id,
+      type: behavior.type,
+      name: behavior._source.name,
+      disabled: behavior.disabled,
+      system: systemAsRead(behavior),
+      managed: isManaged(behavior)
+    })),
+    managed: isManaged(region)
   };
 }
 

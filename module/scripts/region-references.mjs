@@ -22,7 +22,7 @@ export function referenceFields(type) {
  * The absolute UUID a stored one names. Foundry resolves a relative one against the behavior
  * (client/data/region-behaviors/teleport-token.mjs:83). One it cannot read is handed on as it is.
  */
-export const namedBy = (uuid, behavior) => foundry.utils.parseUuid(uuid, { relative: behavior })?.uuid ?? uuid;
+const namedBy = (uuid, behavior) => foundry.utils.parseUuid(uuid, { relative: behavior })?.uuid ?? uuid;
 
 /** A behavior's stored system data, with the absolute UUID in place of each one stored relative to the behavior. */
 export function systemAsRead(behavior) {

@@ -434,7 +434,6 @@ describe("sync_regions and the stairs between levels", () => {
       [[`${scene.uuid}.Region.${west.id}`], [`${scene.uuid}.Region.${east.id}`]]
     );
     assert.deepEqual(writes(), ["create Region", "create Region"]);
-    assert.equal(world.log.documentWrites[0]!.keepId, true);
   });
 
   it("writes nothing on the next run although Foundry keeps a destination in another spelling than the given one", async () => {

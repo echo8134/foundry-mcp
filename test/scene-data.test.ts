@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   canvasOverflow,
+  levelFields,
   planSceneChanges,
   scenesNamed,
   touchesGeometry,
@@ -223,5 +224,55 @@ describe("unknownSceneFields", () => {
       unknownSceneFields({ shiftZ: 1, grid: { shape: 1, size: 2 }, background: { tint: 1 }, name: "A" }),
       ["shiftZ", "grid.shape", "background.tint"]
     );
+  });
+});
+
+describe("levelFields", () => {
+  it("gives the stored fields a builder works with, and says which level is the scene's initial one", () => {
+    const level = {
+      id: "lvlTower",
+      name: "Bell tower",
+      _source: {
+        name: "Bell tower",
+        sort: 300,
+        elevation: { bottom: 40, top: null },
+        background: { src: "maps/tower.webp", color: "#101010", tint: "#ffffff", alphaThreshold: 0.75 },
+        foreground: { src: null, tint: "#ffffff", alphaThreshold: 0.75 },
+        fog: { src: null },
+        textures: {
+          anchorX: 0.5,
+          anchorY: 0.5,
+          offsetX: 40,
+          offsetY: -20,
+          fit: "width",
+          scaleX: 1,
+          scaleY: 1,
+          rotation: 0
+        },
+        visibility: { levels: ["lvlNave"] },
+        flags: {}
+      }
+    };
+    assert.deepEqual(levelFields(level, "lvlNave"), {
+      id: "lvlTower",
+      name: "Bell tower",
+      sort: 300,
+      initial: false,
+      elevation: { bottom: 40, top: null },
+      background: { src: "maps/tower.webp", color: "#101010" },
+      foreground: { src: null },
+      textures: {
+        anchorX: 0.5,
+        anchorY: 0.5,
+        offsetX: 40,
+        offsetY: -20,
+        fit: "width",
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0
+      },
+      visibility: { levels: ["lvlNave"] }
+    });
+    assert.equal(levelFields(level, "lvlTower").initial, true);
   });
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { levelFields, regionMarkers, shapeInFrame, shapeOnCanvas } from "../module/scripts/region-data.mjs";
+import { regionMarkers, shapeInFrame, shapeOnCanvas } from "../module/scripts/region-data.mjs";
 
 // 2000x1500 scene, padding 0.25, grid 100: the scene rectangle starts at 500,400 on the canvas.
 const rect = { x: 500, y: 400, width: 2000, height: 1500 };
@@ -259,56 +259,6 @@ describe("a region's shape in the frame of a call", () => {
     const emanation = { type: "emanation", radius: 0, base: { type: "circle", x: 0, y: 0, radius: 50 } };
     assert.deepEqual(shapeOnCanvas(ring, pixels, rect).problems, []);
     assert.deepEqual(shapeOnCanvas(emanation, pixels, rect).problems, []);
-  });
-});
-
-describe("levelFields", () => {
-  it("gives the stored fields a builder works with, and says which level is the scene's initial one", () => {
-    const level = {
-      id: "lvlTower",
-      name: "Bell tower",
-      _source: {
-        name: "Bell tower",
-        sort: 300,
-        elevation: { bottom: 40, top: null },
-        background: { src: "maps/tower.webp", color: "#101010", tint: "#ffffff", alphaThreshold: 0.75 },
-        foreground: { src: null, tint: "#ffffff", alphaThreshold: 0.75 },
-        fog: { src: null },
-        textures: {
-          anchorX: 0.5,
-          anchorY: 0.5,
-          offsetX: 40,
-          offsetY: -20,
-          fit: "width",
-          scaleX: 1,
-          scaleY: 1,
-          rotation: 0
-        },
-        visibility: { levels: ["lvlNave"] },
-        flags: {}
-      }
-    };
-    assert.deepEqual(levelFields(level, "lvlNave"), {
-      id: "lvlTower",
-      name: "Bell tower",
-      sort: 300,
-      initial: false,
-      elevation: { bottom: 40, top: null },
-      background: { src: "maps/tower.webp", color: "#101010" },
-      foreground: { src: null },
-      textures: {
-        anchorX: 0.5,
-        anchorY: 0.5,
-        offsetX: 40,
-        offsetY: -20,
-        fit: "width",
-        scaleX: 1,
-        scaleY: 1,
-        rotation: 0
-      },
-      visibility: { levels: ["lvlNave"] }
-    });
-    assert.equal(levelFields(level, "lvlTower").initial, true);
   });
 });
 

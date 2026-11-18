@@ -1,13 +1,12 @@
-// The regions of a scene: what get_scene says of one, and sync_regions, which brings the regions the bridge made on
-// one level set to a given list. planRegions runs every check and reads only. syncRegions writes the plan and reports
+// sync_regions, which brings the regions the bridge made on one level set of a scene to a given list. planRegions runs every check and reads only. syncRegions writes the plan and reports
 // from the stored data.
 
 import { isPlainObject, updateFor, writeOutcome } from "./data-diff.mjs";
 import { findDocument, systemTypes, unknownType } from "./document-access.mjs";
 import { rulesOf } from "./document-rules.mjs";
 import { MethodError } from "./errors.mjs";
-import { shapeInFrame, shapeOnCanvas } from "./region-data.mjs";
-import { referenceFields, sameReferences, systemAsRead } from "./region-references.mjs";
+import { shapeOnCanvas } from "./region-data.mjs";
+import { referenceFields, sameReferences } from "./region-references.mjs";
 import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet, sameLevels } from "./scope.mjs";
 import { checkLevels, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
 import { checkAsked, kindOf, NOT_CREATED, planBuilt, planUpdate, refuse, withoutOwnFlags } from "./write-checks.mjs";
@@ -40,37 +39,6 @@ const BRIDGE_MADE = Object.freeze({ [FLAG_SCOPE]: { managed: true } });
  * (client/documents/region-behavior.mjs:76-78).
  */
 const storedName = (behavior) => behavior._source.name;
-
-/**
- * What get_scene says of a region, from its stored data (common/documents/region.mjs:48-90): the shapes in the frame,
- * an elevation without a bound as null, a restriction only while it is enabled and an attachment only to a token.
- * Left out is what places no region and decides nothing in play: the lock and the highlighting of the region layer,
- * the ownership, and the shape constraints Foundry works out itself.
- */
-export function regionFields(region, frame, rect) {
-  const { name, color, shapes, elevation, levels, restriction, attachment, visibility, hidden } = region._source;
-  return {
-    id: region.id,
-    name,
-    levels: [...levels],
-    elevation: { ...elevation },
-    shapes: shapes.map((shape) => shapeInFrame(shape, frame, rect)),
-    color,
-    visibility,
-    hidden,
-    ...(restriction.enabled && { restriction: { ...restriction } }),
-    ...(attachment.token && { attachment: { token: attachment.token } }),
-    behaviors: region.behaviors.map((behavior) => ({
-      id: behavior.id,
-      type: behavior.type,
-      name: storedName(behavior),
-      disabled: behavior.disabled,
-      system: systemAsRead(behavior),
-      managed: isManaged(behavior)
-    })),
-    managed: isManaged(region)
-  };
-}
 
 function refuseKept(fields, at) {
   const keys = Object.keys(fields).filter((key) => key.startsWith("_"));

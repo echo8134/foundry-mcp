@@ -118,3 +118,25 @@ export function unknownSceneFields(input, prefix = "") {
 export function scenesNamed(scenes, name, folderId) {
   return scenes.filter((scene) => scene.name === name && scene.folderId === folderId);
 }
+
+/**
+ * What get_scene says of a level, from its stored data, where an elevation without a bound is null
+ * (common/documents/level.mjs:74-116, ExtendedNumberField at common/data/fields.mjs:1655).
+ * @param {Record<string, any>} level
+ * @param {string | undefined} initialId the id of the scene's initial level
+ * @returns {Record<string, any>}
+ */
+export function levelFields(level, initialId) {
+  const { sort, elevation, background, foreground, textures, visibility } = level._source;
+  return {
+    id: level.id,
+    name: level.name,
+    sort,
+    initial: level.id === initialId,
+    elevation: { bottom: elevation.bottom, top: elevation.top },
+    background: { src: background.src, color: background.color },
+    foreground: { src: foreground.src },
+    textures: { ...textures },
+    visibility: { levels: [...visibility.levels] }
+  };
+}
