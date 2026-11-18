@@ -18,7 +18,6 @@ import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { isManaged } from "./scope.mjs";
 import { folderRecords, foldersAsRecords, takenBack } from "./world.mjs";
-import { refuse } from "./write-checks.mjs";
 
 const MAX_LISTED = 200;
 
@@ -93,21 +92,22 @@ const DEFAULT_ORDER = Object.freeze({ compare: byFolderThenName, keep: (sorted) 
 /** The filters of a listing that the documents of the type or of the place have nothing to match with. */
 function checkFilters(cls, { folder, name, subtype }, folders, types) {
   const type = cls.documentName;
+  const noMatch = (message) => new MethodError("invalid_params", message);
   if (folder !== undefined && folders === null) {
-    throw refuse(
+    throw noMatch(
       hasFolders(type)
         ? `folder narrows a listing of the world or of a pack, and embedded documents lie in no folder. Leave folder out.`
         : `${type} documents lie in no folder. Leave folder out.`
     );
   }
   if (name !== undefined && !hasField(cls, "name")) {
-    throw refuse(`${type} documents have no name. Leave name out.`);
+    throw noMatch(`${type} documents have no name. Leave name out.`);
   }
   if (subtype !== undefined && types === null) {
-    throw refuse(`${type} documents have no types. Leave subtype out.`);
+    throw noMatch(`${type} documents have no types. Leave subtype out.`);
   }
   if (subtype !== undefined && !types.includes(subtype)) {
-    throw refuse(`Unknown ${type} type "${subtype}". Use one of: ${types.join(", ")}.`);
+    throw noMatch(`Unknown ${type} type "${subtype}". Use one of: ${types.join(", ")}.`);
   }
 }
 

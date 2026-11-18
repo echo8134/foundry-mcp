@@ -151,7 +151,10 @@ describe("update_documents", () => {
   it("refuses a UUID nothing exists at, another subtype and an image that does not load", async () => {
     await assert.rejects(
       update({ uuid: page.uuid, data: { name: "Fine" } }, { uuid: "JournalEntry.nobody", data: { name: "X" } }),
-      refused("not_found", /^documents\[1\]: Nothing exists at the UUID JournalEntry\.nobody\. Nothing was written\./)
+      refused(
+        "not_found",
+        /^documents\[1\]: Nothing exists at the UUID JournalEntry\.nobody\..* Nothing was written\.$/
+      )
     );
     await assert.rejects(
       update({ uuid: page.uuid, data: { type: "image" } }),

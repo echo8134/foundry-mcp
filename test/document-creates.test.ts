@@ -115,11 +115,18 @@ describe("create_documents", () => {
       [{ type: "JournalEntry", parent: entry.uuid, pack: "world.handouts" }, /Give parent or pack, not both/]
     ];
     for (const [target, message] of refusals) {
-      await assert.rejects(create({ ...target, documents: [{ name: "X" }] }), refused("invalid_params", message));
+      await assert.rejects(
+        create({ ...target, documents: [{ name: "X" }] }),
+        (error: unknown) => refused("invalid_params", message)(error) && NOT_WRITTEN.test((error as Error).message)
+      );
     }
     await assert.rejects(
       create({ type: "JournalEntryPage", parent: "JournalEntry.nobody", documents: [{ name: "X" }] }),
-      refused("not_found", /Nothing exists at the UUID JournalEntry\.nobody\. Nothing was written\./)
+      refused("not_found", /^Nothing exists at the UUID JournalEntry\.nobody\..* Nothing was written\.$/)
+    );
+    await assert.rejects(
+      create({ type: "JournalEntry", pack: "world.lore", documents: [{ name: "X" }] }),
+      refused("not_found", /^No compendium pack with the id world\.lore\..* Nothing was written\.$/)
     );
     assert.deepEqual(writes(world), []);
   });

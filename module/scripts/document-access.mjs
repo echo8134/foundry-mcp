@@ -70,17 +70,13 @@ async function fromUuid(uuid) {
 /** The document at a UUID, or null: for a deletion, which ignores what is not there. */
 export const findDocument = fromUuid;
 
-/**
- * @param {string} uuid
- * @param {{where?: string, write?: boolean}} [options] `where` names the entry of the request, and `write` says that
- *   the call is one that writes, which a refusal ends before anything is written
- */
-export async function resolveDocument(uuid, { where = "", write = false } = {}) {
+/** @param {string} uuid @param {string} [where] the entry of the request the UUID is given in */
+export async function resolveDocument(uuid, where = "") {
   const document = await fromUuid(uuid);
   if (document) return document;
   throw new MethodError(
     "not_found",
-    `${where}Nothing exists at the UUID ${uuid}.${write ? " Nothing was written." : ""} list_documents returns the UUIDs of the documents of a type.`
+    `${where}Nothing exists at the UUID ${uuid}. list_documents returns the UUIDs of the documents of a type.`
   );
 }
 
@@ -119,45 +115,43 @@ function placesOf(type) {
 }
 
 /**
- * Where a listing reads or a create writes, from the type, parent and pack of a request. Owns every refusal about the
- * place: a parent that holds no such documents, a pack of another type, a type the world itself has none of, and for a
- * write a locked pack.
+ * Where a listing reads or a create writes, from the type, parent and pack of a request. Says what to pass instead
+ * for a place that holds no such documents: a parent of another kind, a pack of another type, a type the world itself
+ * has none of. Reads only, and knows of no lock: a write checks that itself.
  * @param {{type: string, parent?: string, pack?: string}} request
- * @param {{write?: boolean}} [options]
  * @returns {Promise<Target>}
  */
-export async function targetOf({ type, parent: parentUuid, pack: packId }, { write = false } = {}) {
+export async function targetOf({ type, parent: parentUuid, pack: packId }) {
   const cls = classOf(type);
+  const noPlace = (message) => new MethodError("invalid_params", message);
   if (parentUuid !== undefined && packId !== undefined) {
-    throw refuse(
+    throw noPlace(
       "Give parent or pack, not both. A parent that lies in a compendium pack names that pack in its own UUID."
     );
   }
   if (parentUuid !== undefined) {
-    const parent = await resolveDocument(parentUuid, { write });
+    const parent = await resolveDocument(parentUuid);
     const held = embeddedNamesOf(classOf(parent.documentName));
     if (!held.includes(type)) {
       const holds = held.length > 0 ? `It holds: ${held.join(", ")}.` : "It holds no embedded documents.";
       const instead = placesOf(type);
-      throw refuse(
+      throw noPlace(
         `${parentUuid} is a ${parent.documentName}, which holds no ${type} documents. ${holds}${instead ? ` For ${type} pass ${instead}.` : ""}`
       );
     }
-    if (write) refuseLocked(packOf(parent), `${parentUuid} lies`);
     return { cls, parent, pack: null };
   }
   if (packId !== undefined) {
     const pack = findPack(packId, type);
     if (pack.documentName !== type) {
-      throw refuse(
+      throw noPlace(
         `The pack ${packId} holds ${pack.documentName} documents, not ${type}. Pass type ${pack.documentName}, or for a document inside one of them its UUID as parent.`
       );
     }
-    if (write) refuseLocked(pack, "The new documents would lie");
     return { cls, parent: null, pack };
   }
   if (!CONST.WORLD_DOCUMENT_TYPES.includes(type)) {
-    throw refuse(`A world has no ${type} documents of its own. Pass ${placesOf(type)}.`);
+    throw noPlace(`A world has no ${type} documents of its own. Pass ${placesOf(type)}.`);
   }
   return { cls, parent: null, pack: null };
 }

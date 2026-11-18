@@ -60,8 +60,21 @@ export function kindOf(documentName) {
  */
 export const walkOf = (type, embedded = false) => ({ type, schemaFor: TYPED_ENTRY_SCHEMAS, embedded });
 
-export const refuse = (message, where = "") =>
-  new MethodError("invalid_params", `${where}${message} Nothing was written.`);
+const UNWRITTEN = "Nothing was written.";
+
+export const refuse = (message, where = "") => new MethodError("invalid_params", `${where}${message} ${UNWRITTEN}`);
+
+/**
+ * A lookup that a write begins with, such as the document a UUID names. What the lookup cannot find ends the write
+ * before it wrote anything, and its error says so.
+ * @template T
+ * @param {Promise<T>} lookup
+ * @returns {Promise<T>}
+ */
+export const forWrite = (lookup) =>
+  lookup.catch((error) => {
+    throw error instanceof MethodError ? new MethodError(error.code, `${error.message} ${UNWRITTEN}`) : error;
+  });
 
 export const modelRefusal = (kind, error, where = "") =>
   refuse(`Foundry's ${kind.noun} model refuses the data: ${error.message}`, where);

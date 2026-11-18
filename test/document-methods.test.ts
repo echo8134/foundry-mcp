@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fakeWorld } from "./fake-world.ts";
-import { MANAGED, refused, restoreGlobals, viaTool, type World } from "./token-world.ts";
+import { MANAGED, refused as refusedWith, restoreGlobals, viaTool, type World } from "./token-world.ts";
 
 afterEach(restoreGlobals);
+
+/** A refusal of a tool that only reads names no write. */
+const refused = (code: string, message?: RegExp) => (error: unknown) =>
+  refusedWith(code, message)(error) && !/Nothing was written/.test((error as Error).message);
 
 const list = (args: Record<string, unknown>) => viaTool("list_documents", args);
 const get = (uuid: string) => viaTool("get_document", { uuid });
@@ -155,7 +159,7 @@ describe("list_documents in the world", () => {
       list({ type: "JournalEntryPage" }),
       refused(
         "invalid_params",
-        /A world has no JournalEntryPage documents of its own\. Pass parent: the UUID of the JournalEntry that holds them\. Nothing was written\.$/
+        /^A world has no JournalEntryPage documents of its own\. Pass parent: the UUID of the JournalEntry that holds them\.$/
       )
     );
     await assert.rejects(

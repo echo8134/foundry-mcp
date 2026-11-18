@@ -25,6 +25,7 @@ import {
   checkImage,
   checkKeptAsGiven,
   checkRemoval,
+  forWrite,
   kindOf,
   modelRefusal,
   refuse,
@@ -126,7 +127,9 @@ async function planCreation({ cls, parent, pack }, given, where) {
 }
 
 async function planCreations(request) {
-  const target = await targetOf(request, { write: true });
+  const target = await forWrite(targetOf(request));
+  if (target.parent) refuseLocked(packOf(target.parent), `${request.parent} lies`);
+  else refuseLocked(target.pack, "The new documents would lie");
   refuseUnwritten(request.type);
   const plans = [];
   for (const [index, given] of request.documents.entries()) {
@@ -178,7 +181,7 @@ export async function createDocuments(request) {
 
 /** Every check of a change to one document, and what the change is to bring about. Reads only. */
 async function planChange({ uuid, data: given = {}, remove = [] }, where) {
-  const document = await resolveDocument(uuid, { where, write: true });
+  const document = await forWrite(resolveDocument(uuid, where));
   const name = document.documentName;
   refuseUnwritten(name, where);
   refuseLocked(packOf(document), `${uuid} lies`, where);
