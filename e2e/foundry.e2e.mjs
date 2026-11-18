@@ -2511,6 +2511,171 @@ try {
       );
     }
 
+    // A scene of the test's own for the checks that need one: it is not viewed, and the cleanup below deletes it.
+    const ownScene = await page.evaluate(async (name) => {
+      const scene = await Scene.implementation.create({
+        name,
+        width: 1000,
+        height: 800,
+        padding: 0,
+        navigation: false
+      });
+      const [region] = await scene.createEmbeddedDocuments("Region", [{ name: "e2e region" }]);
+      return { id: scene.id, uuid: scene.uuid, regionUuid: region.uuid };
+    }, `${documentFolder} scene`);
+
+    await check("update_documents renames a scene, and refuses its walls inside the data", async () => {
+      const name = `${documentFolder} scene, renamed`;
+      const renamed = await tool(client, "update_documents", { documents: [{ uuid: ownScene.uuid, data: { name } }] });
+      same(renamed.documents, [{ uuid: ownScene.uuid, changed: ["name"], unapplied: [] }], "renamed");
+      await assertRejects(
+        tool(client, "update_documents", {
+          documents: [
+            { uuid: ownScene.uuid, data: { name: `${documentFolder} scene`, walls: [{ c: [0, 0, 100, 0] }] } }
+          ]
+        }),
+        /walls cannot be given: it holds the embedded documents of the Scene, which each have a UUID of their own.*Nothing was written\.$/
+      );
+      same(
+        await page.evaluate((id) => [game.scenes.get(id).name, game.scenes.get(id).walls.size], ownScene.id),
+        [name, 0],
+        "the stored scene"
+      );
+    });
+
+    await check(
+      "no region behavior that runs code is created or rewritten, alone or with its region, and one that runs none is created",
+      async () => {
+        const script = {
+          type: "executeScript",
+          system: { events: ["behaviorActivated"], source: "globalThis.foundryMcpE2eRan = true;" }
+        };
+        await assertRejects(
+          tool(client, "create_documents", {
+            type: "RegionBehavior",
+            parent: ownScene.regionUuid,
+            documents: [script]
+          }),
+          /documents\[0\]: These tools create no region behavior of the type executeScript: its source is code that Foundry runs by itself, without anyone clicking, in every connected browser, the players' included\. The Gamemaster adds such a behavior in Foundry's own region configuration\. Nothing was written\.$/
+        );
+        await assertRejects(
+          tool(client, "create_documents", {
+            type: "Region",
+            parent: ownScene.uuid,
+            documents: [{ name: "e2e trap", behaviors: [script] }]
+          }),
+          /documents\[0\]: behaviors\.0: These tools create no region behavior of the type executeScript/
+        );
+        await assertRejects(
+          tool(client, "create_documents", {
+            type: "RegionBehavior",
+            parent: ownScene.regionUuid,
+            documents: [{ type: "executeMacro", system: { events: ["behaviorActivated"], uuid: null, everyone: true } }]
+          }),
+          /These tools create no region behavior of the type executeMacro: it makes Foundry run a macro by itself/
+        );
+        same(
+          await page.evaluate((id) => {
+            const scene = game.scenes.get(id);
+            return [scene.regions.size, scene.regions.contents[0].behaviors.size, globalThis.foundryMcpE2eRan === true];
+          }, ownScene.id),
+          [1, 0, false],
+          "regions, behaviors, and whether the script ran"
+        );
+
+        // A script behavior written in Foundry, which lists no event and so never runs.
+        const written = await page.evaluate(async (uuid) => {
+          const region = await fromUuid(uuid);
+          const [behavior] = await region.createEmbeddedDocuments("RegionBehavior", [
+            { type: "executeScript", disabled: true, system: { events: [], source: "// written in Foundry" } }
+          ]);
+          return behavior.uuid;
+        }, ownScene.regionUuid);
+        const read = await tool(client, "get_document", { uuid: written });
+        same(read.data.system.source, "// written in Foundry", "the source as read");
+        await assertRejects(
+          tool(client, "update_documents", {
+            documents: [{ uuid: written, data: { system: { source: "globalThis.foundryMcpE2eRan = true;" } } }]
+          }),
+          /is a region behavior of the type executeScript: .*These tools do not change its source\..*Nothing was written\.$/
+        );
+        const named = await tool(client, "update_documents", {
+          documents: [{ uuid: written, data: { name: "e2e alarm", system: read.data.system } }]
+        });
+        same(named.documents, [{ uuid: written, changed: ["name"], unapplied: [] }], "its other data changes");
+        same(
+          await page.evaluate(async (uuid) => (await fromUuid(uuid))._source.system.source, written),
+          "// written in Foundry",
+          "the stored source"
+        );
+
+        const calm = await tool(client, "create_documents", {
+          type: "RegionBehavior",
+          parent: ownScene.regionUuid,
+          documents: [{ type: "pauseGame" }]
+        });
+        same([calm.created, calm.documents[0].type], [1, "pauseGame"], "a behavior that runs no code");
+        same((await tool(client, "delete_documents", { uuids: [written], handMade: true })).deleted, 1, "deleted");
+      }
+    );
+
+    await check(
+      "create_documents copies a bridge-made actor from the data get_document returns, bridge flag on the prototype token and all",
+      async () => {
+        const made = await tool(client, "ensure_actor", { name: `${documentFolder} actor`, type: "npc" });
+        // Foundry's Assign Token copies the flag of a bridge-made token onto the prototype token
+        // (client/applications/sheets/token/prototype-config.mjs:278-292).
+        await page.evaluate(
+          (id) => game.actors.get(id).update({ "prototypeToken.flags.foundry-mcp.managed": true }),
+          made.id
+        );
+        const read = await tool(client, "get_document", { uuid: made.uuid });
+        same(read.data.prototypeToken.flags["foundry-mcp"], { managed: true }, "the flag on the prototype token");
+        const copied = await tool(client, "create_documents", {
+          type: "Actor",
+          documents: [{ ...read.data, name: `${documentFolder} actor, copied` }]
+        });
+        same(copied.created, 1, "copied");
+        same(
+          await page.evaluate((id) => {
+            const actor = game.actors.get(id);
+            return [actor.name, actor.flags["foundry-mcp"], actor.prototypeToken.flags["foundry-mcp"] ?? null];
+          }, copied.documents[0].id),
+          [`${documentFolder} actor, copied`, { managed: true }, null],
+          "the copy, its flag, and none on its prototype token"
+        );
+        const taken = await tool(client, "update_documents", { documents: [{ uuid: made.uuid, data: read.data }] });
+        same(taken.documents, [{ uuid: made.uuid, changed: [], unapplied: [] }], "the same data taken back unchanged");
+      }
+    );
+
+    await check("delete_documents deletes a world actor together with its token of the same call", async () => {
+      const actor = await tool(client, "ensure_actor", { name: `${documentFolder} actor to delete`, type: "npc" });
+      const placed = await tool(client, "place_tokens", {
+        sceneId: ownScene.id,
+        tokens: [{ actor: actor.id, at: [150, 150] }]
+      });
+      const tokenUuid = `${ownScene.uuid}.Token.${placed.tokens[0].id}`;
+      await assertRejects(
+        tool(client, "delete_documents", { uuids: [actor.uuid] }),
+        /still has tokens on .*Delete the tokens first with delete_tokens, or give their UUIDs in the same call\..*Nothing was written\.$/
+      );
+      const gone = await tool(client, "delete_documents", { uuids: [actor.uuid, tokenUuid] });
+      same(
+        [gone.deleted, gone.documents.map((one) => one.uuid)],
+        [2, [tokenUuid, actor.uuid]],
+        "deleted, the token first"
+      );
+      same(
+        await page.evaluate((ids) => [game.actors.has(ids.actor), game.scenes.get(ids.scene).tokens.size], {
+          actor: actor.id,
+          scene: ownScene.id
+        }),
+        [false, 0],
+        "the actor and its token"
+      );
+    });
+
     await check("delete_documents deletes the entry with its page", async () => {
       const gone = await tool(client, "delete_documents", { uuids: [pageUuid, entry.uuid] });
       same(gone, { deleted: 1, documents: [{ uuid: entry.uuid, name: "e2e lore, revised" }] }, "deleted");
@@ -2527,6 +2692,9 @@ try {
           for (const message of game.messages.filter((one) => one.content.includes("foundry-mcp e2e:")))
             await message.delete();
           await game.users.getName(userName)?.delete();
+          for (const scene of game.scenes.filter((one) => one.name.startsWith(folderName))) await scene.delete();
+          for (const actor of game.actors.filter((one) => one.name.startsWith(folderName))) await actor.delete();
+          delete globalThis.foundryMcpE2eRan;
           const pack = packId ? game.packs.get(packId) : null;
           if (pack?.locked) await pack.configure({ locked: false });
           await pack?.deleteCompendium();
