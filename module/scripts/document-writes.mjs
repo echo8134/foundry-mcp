@@ -20,18 +20,17 @@ import { MethodError } from "./errors.mjs";
 import { documentsWithin, initialTypeOf } from "./field-check.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
-  changedInStorage,
   checkAsked,
   forWrite,
   kindOf,
   NOT_CREATED,
   planBuilt,
   planUpdate,
-  RUN_AGAIN,
   refuse,
   walkOf,
   withoutOwnFlags
 } from "./write-checks.mjs";
+import { changedInStorage, runSteps } from "./write-steps.mjs";
 
 function refuseUnwritten(documentName, where = "") {
   const { unwritten } = rulesOf(documentName);
@@ -232,19 +231,17 @@ export async function updateDocuments(plans) {
   const before = plans.map(({ document }) => document.toObject());
   const stored = [];
   const documents = [];
-  for (const [index, { document, write }] of plans.entries()) {
-    const { update, writes } = updateFor(write, document._source, _del);
-    try {
+  const steps = plans.map(({ document, write }, index) => ({
+    where: `documents[${index}]: `,
+    what: `updating ${document.uuid}`,
+    run: async () => {
+      const { update, writes } = updateFor(write, document._source, _del);
       // An update resolves without the document when a hook refuses it (client/data/client-backend.mjs:237-241).
       stored.push(writes && (await document.update(update)) !== undefined);
-    } catch (error) {
-      throw new MethodError(
-        "foundry_error",
-        `documents[${index}]: Foundry failed while updating ${document.uuid} (${error.message}). ${describeWritten(plans, before, stored)} ${RUN_AGAIN}`
-      );
+      documents.push({ uuid: document.uuid, ...writeOutcome(write, before[index], document._source, stored[index]) });
     }
-    documents.push({ uuid: document.uuid, ...writeOutcome(write, before[index], document._source, stored[index]) });
-  }
+  }));
+  await runSteps(steps, () => describeWritten(plans, before, stored));
   return { documents };
 }
 

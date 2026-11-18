@@ -7,6 +7,7 @@ import { FLAG_SCOPE } from "./scope.mjs";
 import { tokenCentre } from "./token-data.mjs";
 import { cleanedChanges, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
 import { kindOf, withoutOwnFlags } from "./write-checks.mjs";
+import { changedInStorage, runSteps } from "./write-steps.mjs";
 
 /** Token fields a caller may not give, with what to do instead. */
 const NOT_GIVEN = Object.freeze({
@@ -286,7 +287,7 @@ function describeWritten(plans, before) {
     .filter(({ paths }, index) => paths.length === 0 && plans[index].paths.length > 0)
     .map(({ id }) => id);
   const rest = unwritten.length > 0 ? ` Not changed: ${unwritten.join(", ")}.` : "";
-  return `Changed in the stored data: ${written.join("; ")}.${rest}`;
+  return `${changedInStorage(written)}${rest}`;
 }
 
 /**
@@ -313,22 +314,17 @@ export async function updateTokens({ scene, request }) {
       updates.push({ _id: token.id, ...changes });
     }
   }
-  const write = async (what, ids, run) => {
-    if (ids.length === 0) return;
-    try {
-      await run();
-    } catch (error) {
-      throw new MethodError(
-        "foundry_error",
-        `Foundry failed while ${what} ${ids.join(", ")} (${error.message}). ${describeWritten(plans, before)} Running the call again writes what still differs.`
-      );
+  const calls = [
+    { what: "moving the tokens", ids: Object.keys(moves), run: () => scene.moveTokens(moves, { animate: false }) },
+    {
+      what: "updating the tokens",
+      ids: updates.map((update) => update._id),
+      run: () => scene.updateEmbeddedDocuments("Token", updates)
     }
-  };
-  await write("moving the tokens", Object.keys(moves), () => scene.moveTokens(moves, { animate: false }));
-  await write(
-    "updating the tokens",
-    updates.map((update) => update._id),
-    () => scene.updateEmbeddedDocuments("Token", updates)
+  ];
+  await runSteps(
+    calls.flatMap(({ what, ids, run }) => (ids.length > 0 ? [{ what: `${what} ${ids.join(", ")}`, run }] : [])),
+    () => describeWritten(plans, before)
   );
   return {
     tokens: plans.map(({ token, wanted }, index) => {

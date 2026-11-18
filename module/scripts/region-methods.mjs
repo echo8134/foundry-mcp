@@ -10,16 +10,8 @@ import { shapeInFrame, shapeOnCanvas } from "./region-data.mjs";
 import { referenceFields, sameReferences, systemAsRead } from "./region-references.mjs";
 import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet, sameLevels } from "./scope.mjs";
 import { checkLevels, resolveScene, sceneFrame, sceneRect } from "./world.mjs";
-import {
-  checkAsked,
-  kindOf,
-  NOT_CREATED,
-  planBuilt,
-  planUpdate,
-  RUN_AGAIN,
-  refuse,
-  withoutOwnFlags
-} from "./write-checks.mjs";
+import { checkAsked, kindOf, NOT_CREATED, planBuilt, planUpdate, refuse, withoutOwnFlags } from "./write-checks.mjs";
+import { runSteps, writtenBefore, writtenPart, wrote } from "./write-steps.mjs";
 
 /**
  * @typedef {object} BehaviorPlan what one behavior of an entry leads to
@@ -427,8 +419,6 @@ function regionOutcome(plan, state) {
   };
 }
 
-const wrote = ({ created, changed = [], error }) => !error && (created || changed.length > 0);
-
 /** Whether the sync wrote anything of a region that was there before: its own data, or a behavior of it. */
 const wasUpdated = (region) =>
   !region.created &&
@@ -450,23 +440,16 @@ function resultOf(scene, plan, state) {
 
 /** What the stored data shows of a plan after a write that threw: Foundry may have applied a part of it. */
 function describeWritten({ regions, deleted }) {
-  const written = (noun, one) =>
-    wrote(one)
-      ? [`${noun} ${one.name} (${one.id}) ${one.created ? "created" : `changed (${one.changed.join(", ")})`}`]
-      : [];
-  const parts = [
+  return writtenBefore([
     ...regions.flatMap((region) => [
-      ...written("region", region),
-      ...(region.behaviors ?? []).flatMap((behavior) => written(`behavior of the region ${region.name}`, behavior)),
+      ...writtenPart("region", region),
+      ...(region.behaviors ?? []).flatMap((behavior) => writtenPart(`behavior of the region ${region.name}`, behavior)),
       ...(region.removedBehaviors > 0
         ? [`${region.removedBehaviors} behaviors of the region ${region.name} deleted`]
         : [])
     ]),
     ...(deleted > 0 ? [`${deleted} regions deleted`] : [])
-  ];
-  return parts.length > 0
-    ? `Written before that, as the stored data shows: ${parts.join("; ")}.`
-    : "Nothing was written before that.";
+  ]);
 }
 
 /** An update resolves without the document when a hook refuses it (client/data/client-backend.mjs:237-241). */
@@ -533,15 +516,6 @@ export async function syncRegions({ scene, request }) {
   for (const one of plan.regions.flatMap((region) => [region, ...(region.behaviors ?? [])])) {
     if (one.document) state.before.set(one, one.document.toObject());
   }
-  for (const { what, run } of stepsOf(scene, plan, state)) {
-    try {
-      await run();
-    } catch (error) {
-      throw new MethodError(
-        "foundry_error",
-        `Foundry failed while ${what} (${error.message}). ${describeWritten(resultOf(scene, plan, state))} ${RUN_AGAIN}`
-      );
-    }
-  }
+  await runSteps(stepsOf(scene, plan, state), () => describeWritten(resultOf(scene, plan, state)));
   return resultOf(scene, plan, state);
 }

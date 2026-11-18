@@ -1,6 +1,6 @@
-// The checks every write of a document runs before anything is written, and the wording of their refusals and of what
-// a failed write says. planUpdate runs them for a document that exists and planBuilt for a new one. `where` names the
-// entry of the request a refusal is about, and is empty for the one document a call is about.
+// The checks every write of a document runs before anything is written, and the wording of their refusals. planUpdate
+// runs them for a document that exists and planBuilt for a new one. `where` names the entry of the request a refusal is
+// about, and is empty for the one document a call is about.
 
 import {
   dropAt,
@@ -250,12 +250,3 @@ export const createdNothing = (what) =>
   `Foundry created ${what} and reported no error, which is what it does when the system or a module refuses a creation.`;
 
 export const NOT_CREATED = `foundry_error: ${createdNothing("nothing for this entry")}`;
-
-/**
- * What the error of a failed update says of the stored data, where Foundry may have applied a part of the update.
- * @param {readonly string[]} written what changed, each with its paths
- */
-export const changedInStorage = (written) =>
-  written.length > 0 ? `Changed in the stored data: ${written.join("; ")}.` : "Nothing was changed in the stored data.";
-
-export const RUN_AGAIN = "Running the call again writes what still differs.";

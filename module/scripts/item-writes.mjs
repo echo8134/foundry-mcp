@@ -7,7 +7,7 @@
 // effects and actor data alike. An item of the world actor that is changed for one token is stored whole with that
 // token, so its entries can be removed there, and one that is deleted for a token leaves a tombstone with it.
 
-import { dropAt, entriesToRemove, giveElementIds, updateFor, writeOutcome } from "./data-diff.mjs";
+import { dropAt, entriesToRemove, giveElementIds, writeOutcome } from "./data-diff.mjs";
 import { resolveDocument, systemTypes, unknownType } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
 import { elementIdArrays, initialTypeOf } from "./field-check.mjs";
@@ -21,11 +21,11 @@ import {
   NOT_CREATED,
   planBuilt,
   planUpdate,
-  RUN_AGAIN,
   refuse,
   walkOf,
   withoutOwnFlags
 } from "./write-checks.mjs";
+import { runSteps, updatesOf, writtenBefore, writtenPart } from "./write-steps.mjs";
 
 /**
  * @typedef {object} Plan what one entry of the request leads to
@@ -326,13 +326,6 @@ export async function planEmbedded(actor, { items = [], removeItems, effects = [
   return plan;
 }
 
-const updatesOf = (plans) =>
-  plans.flatMap((plan) => {
-    if (!plan.document) return [];
-    const { update, writes } = updateFor(plan.write, plan.document._source, _del);
-    return writes ? [{ _id: plan.id, ...update }] : [];
-  });
-
 /** Ids that are not there are left out: Foundry throws for one, and deletes none (client/data/client-backend.mjs:402). */
 async function deleteExisting(parent, documentName, collection, ids) {
   const existing = ids.filter((id) => collection.has(id));
@@ -439,22 +432,16 @@ const outcomeOf = (actor, plan, state) => ({
 
 /** What the stored data shows of a plan after a write that threw: Foundry may have applied a part of it. */
 function describeWritten({ items, effects, removedItems, removedEffects }) {
-  const written = (noun, { id, name, created, changed = [], error }) => {
-    if (error || !(created || changed.length > 0)) return [];
-    return [`${noun} ${name} (${id}) ${created ? "created" : `changed (${changed.join(", ")})`}`];
-  };
   const parts = [
     ...items.flatMap((item) => [
-      ...written("item", item),
-      ...(item.effects ?? []).flatMap((effect) => written(`effect of the item ${item.name}`, effect))
+      ...writtenPart("item", item),
+      ...(item.effects ?? []).flatMap((effect) => writtenPart(`effect of the item ${item.name}`, effect))
     ]),
-    ...effects.flatMap((effect) => written("effect", effect)),
+    ...effects.flatMap((effect) => writtenPart("effect", effect)),
     ...(removedItems > 0 ? [`${removedItems} items deleted`] : []),
     ...(removedEffects > 0 ? [`${removedEffects} effects deleted`] : [])
   ];
-  return parts.length > 0
-    ? `Written before that, as the stored data shows: ${parts.join("; ")}.`
-    : "No item and no effect was written before that.";
+  return writtenBefore(parts, "No item and no effect was written before that.");
 }
 
 /**
@@ -476,15 +463,7 @@ export async function writeEmbedded(actor, plan) {
     // toObject, not structuredClone: measured, the stored data of some items cannot be structured-cloned.
     if (one.document) state.before.set(one, one.document.toObject());
   }
-  for (const { what, run } of stepsOf(actor, plan, state)) {
-    try {
-      await run();
-    } catch (error) {
-      throw new MethodError(
-        "foundry_error",
-        `Foundry failed while ${what} of ${actor.name} (${error.message}). ${describeWritten(outcomeOf(actor, plan, state))} ${RUN_AGAIN}`
-      );
-    }
-  }
+  const steps = stepsOf(actor, plan, state).map(({ what, run }) => ({ what: `${what} of ${actor.name}`, run }));
+  await runSteps(steps, () => describeWritten(outcomeOf(actor, plan, state)));
   return outcomeOf(actor, plan, state);
 }

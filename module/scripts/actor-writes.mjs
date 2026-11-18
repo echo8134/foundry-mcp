@@ -6,16 +6,8 @@ import { MethodError } from "./errors.mjs";
 import { hasEmbedded, planEmbedded, writeEmbedded } from "./item-writes.mjs";
 import { claimNamed, FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { createMissingFolders, findFolder, scenesWithTokensOf } from "./world.mjs";
-import {
-  changedInStorage,
-  checkAsked,
-  createdNothing,
-  KINDS,
-  planBuilt,
-  planUpdate,
-  RUN_AGAIN,
-  refuse
-} from "./write-checks.mjs";
+import { checkAsked, createdNothing, KINDS, planBuilt, planUpdate, refuse } from "./write-checks.mjs";
+import { changedInStorage, runSteps } from "./write-steps.mjs";
 
 /** The inputs of ensure_actor that are the actor's own stored data, each under the name of its stored field. */
 const DATA_KEYS = Object.freeze(["name", "img", "system", "prototypeToken", "ownership", "flags"]);
@@ -190,19 +182,14 @@ async function createActor(data) {
 async function changeActor(actor, write, before) {
   const { update, writes } = updateFor(write, actor._source, _del);
   if (!writes) return;
-  try {
-    // Measured on 14.370: an update sent through a token's actor loses earlier changes of that token on the server
-    // (hp.temp written after hp.value dropped the value, seen only after a reload) and applies no deletion. The same
-    // update sent through the token merges into its delta.
-    await (actor.isToken ? actor.token.update({ delta: update }) : actor.update(update));
-  } catch (error) {
+  // Measured on 14.370: an update sent through a token's actor loses earlier changes of that token on the server
+  // (hp.temp written after hp.value dropped the value, seen only after a reload) and applies no deletion. The same
+  // update sent through the token merges into its delta.
+  const run = () => (actor.isToken ? actor.token.update({ delta: update }) : actor.update(update));
+  await runSteps([{ what: `updating ${actor.name}`, run }], () => {
     const { changed } = writeOutcome(write, before, actor._source);
-    const written = changedInStorage(changed.length > 0 ? [changed.join(", ")] : []);
-    throw new MethodError(
-      "foundry_error",
-      `Foundry failed while updating ${actor.name} (${error.message}). ${written} ${RUN_AGAIN}`
-    );
-  }
+    return changedInStorage(changed.length > 0 ? [changed.join(", ")] : []);
+  });
 }
 
 /** A failed write leaves the folders made for it in place, and says so. */
