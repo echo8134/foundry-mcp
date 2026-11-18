@@ -308,7 +308,10 @@ async function planDeletion({ uuids, handMade }) {
     refuseUnwritten(document.documentName);
     refuseLocked(packOf(document), `${document.uuid} lies`);
   }
-  refuseRuled(documents.flatMap((document) => rulesOf(document.documentName).remove?.(document) ?? []).join(" "));
+  const going = (other) => asked.has(other.uuid) || hasAncestorIn(other, asked);
+  refuseRuled(
+    documents.flatMap((document) => rulesOf(document.documentName).remove?.(document, going) ?? []).join(" ")
+  );
   const foreign = documents.filter((document) => !isManaged(document));
   if (foreign.length > 0 && handMade !== true) {
     throw refuse(
@@ -323,7 +326,10 @@ export async function prepareDeletion(request) {
   return request;
 }
 
-/** Foundry deletes the documents of one class in one parent or pack with one call (common/abstract/document.mjs:696-701). */
+/**
+ * Foundry deletes the documents of one class in one parent or pack with one call (common/abstract/document.mjs:696-701).
+ * The groups come in the order of the request, but for those a rule puts last: an actor goes after its tokens.
+ */
 function deletionGroups(documents) {
   const groups = new Map();
   for (const document of documents) {
@@ -333,15 +339,20 @@ function deletionGroups(documents) {
     if (!groups.has(key)) groups.set(key, { cls: classOf(document.documentName), parent, pack, documents: [] });
     groups.get(key).documents.push(document);
   }
-  return [...groups.values()];
+  const isLast = ({ cls }) => rulesOf(cls.documentName).last === true;
+  return [...groups.values()].sort((a, b) => Number(isLast(a)) - Number(isLast(b)));
 }
 
 export async function deleteDocuments(request) {
   const planned = await planDeletion(request);
   const deleted = [];
   for (const { cls, parent, pack, documents } of deletionGroups(planned)) {
+    // Asked again at its turn, when nothing of the call is still to go: a token whose deletion a hook refused keeps
+    // its actor.
+    const due = documents.filter((document) => !rulesOf(cls.documentName).remove?.(document, () => false));
+    if (due.length === 0) continue;
     const entries = new Map(
-      documents.map((document) => [
+      due.map((document) => [
         document.id,
         { uuid: document.uuid, ...(typeof document.name === "string" && { name: document.name }) }
       ])

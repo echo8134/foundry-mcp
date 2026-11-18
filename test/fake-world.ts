@@ -131,6 +131,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     actorCreateError: null as string | null,
     /** The message of an error the update throws once it has stored its changes, as a failing hook after the write does. */
     actorUpdateError: null as string | null,
+    /** Stands in for a preDeleteToken hook that refuses the deletion of a token. */
+    vetoTokenDelete: null as null | ((token: any) => boolean),
     /** Stands in for a preDeleteActor hook that refuses the deletion of an actor. */
     vetoActorDelete: null as null | ((actor: any) => boolean),
     /** Stands in for a preCreate hook that refuses an item or an effect. */
@@ -697,9 +699,11 @@ export function fakeWorld(options: WorldOptions = {}) {
         if (name === "Token") {
           for (const id of ids) if (!tokens.has(id)) throw new Error(`Token ${id} does not exist`);
           log.tokenDeletes++;
+          // Foundry skips a token whose deletion a hook refuses (client/data/client-backend.mjs:404-409).
+          const deleted = ids.map((id) => tokens.get(id)).filter((token) => !control.vetoTokenDelete?.(token));
           // A deleted token is no longer one of its actor's (client/documents/token.mjs:3150).
-          for (const id of ids) dependentTokens.get(tokens.get(id).actorId)?.delete(tokens.get(id));
-          return ids.map((id) => tokens.get(id)).filter((token) => tokens.delete(token.id));
+          for (const token of deleted) dependentTokens.get(token.actorId)?.delete(token);
+          return deleted.filter((token) => tokens.delete(token.id));
         }
         assert.ok(name === "Wall" || name === "AmbientLight", name);
         const isLight = name === "AmbientLight";

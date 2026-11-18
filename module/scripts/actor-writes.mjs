@@ -314,10 +314,13 @@ export async function ensureActor(request) {
  * The names of the scenes a world actor has tokens on, which its deletion would leave without an actor. concreteOnly
  * leaves out tokens that are not stored in their scene, such as the ones place_tokens builds to check its input
  * (client/documents/actor.mjs:589-597).
+ * @param {any} actor
+ * @param {(token: any) => boolean} [going] whether a token is deleted by the same call, and so needs no actor
+ * @returns {string[]}
  */
-export function scenesWithTokensOf(actor) {
-  const scenes = actor.getDependentTokens({ concreteOnly: true }).map((token) => token.parent.name);
-  return [...new Set(scenes)];
+export function scenesWithTokensOf(actor, going = () => false) {
+  const staying = actor.getDependentTokens({ concreteOnly: true }).filter((token) => !going(token));
+  return [...new Set(staying.map((token) => token.parent.name))];
 }
 
 /** Every check of a deletion, and the world actors it deletes. Reads only. */

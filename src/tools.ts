@@ -946,10 +946,11 @@ const SPECS: Record<Method, ToolSpec> = {
       "refused, names those documents and deletes nothing. The embedded documents of a document that is deleted go " +
       "with it whoever made them. Also refused, before anything is deleted: a document in a locked compendium pack " +
       "(the Gamemaster unlocks it in Foundry), a world actor that still has tokens on a scene (delete the tokens " +
-      "first with delete_tokens), the actor of a token (delete the token), the user this bridge works as, and a " +
-      "Setting or an ActorDelta, which this tool does not write. Deleting a User removes that account and the " +
-      "settings stored for it. Returns {deleted, documents: [{uuid, name}]}: the documents Foundry deleted. A " +
-      "deletion that a hook refused is left out of both. " +
+      "first with delete_tokens, or give their UUIDs or their scene's in the same call, which deletes them before " +
+      "the actor), the actor of a token (delete the token), the user this bridge works as, and a Setting or an " +
+      "ActorDelta, which this tool does not write. Deleting a User removes that account and the settings stored for " +
+      "it. Returns {deleted, documents: [{uuid, name}]}: the documents Foundry deleted. A deletion that a hook " +
+      "refused is left out of both, and so is an actor one of whose tokens a hook kept. " +
       SPECIAL_TOOLS,
     input: z.strictObject({
       uuids: z.array(nonBlank).min(1).describe("UUIDs of the documents to delete."),

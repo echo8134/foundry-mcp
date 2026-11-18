@@ -489,6 +489,53 @@ describe("delete_documents", () => {
     assert.deepEqual([...world.actors.keys()], [goblin.id]);
   });
 
+  it("deletes a world actor with its tokens of the same call, the tokens first", async () => {
+    const cellar = world.addScene({ name: "Cellar" });
+    const tower = world.addScene({ name: "Tower" });
+    const goblin = world.addActor({ name: "Goblin", flags: MANAGED });
+    const [first, second] = [cellar, cellar].map((scene) =>
+      world.addToken(scene, { name: "Goblin", actorId: goblin.id, flags: MANAGED })
+    );
+    const far = world.addToken(tower, { name: "Goblin", actorId: goblin.id, flags: MANAGED });
+    await assert.rejects(
+      remove([`Actor.${goblin.id}`, first.uuid, second.uuid]),
+      refused(
+        "invalid_params",
+        /Goblin \(Actor\.\w+\) still has tokens on Tower, which would be left without an actor\. Delete the tokens first with delete_tokens, or give their UUIDs in the same call\./
+      )
+    );
+    assert.deepEqual([world.actors.size, cellar.tokens.size, world.log.tokenDeletes], [1, 2, 0]);
+
+    let tokensLeft = -1;
+    world.control.vetoActorDelete = () => {
+      tokensLeft = cellar.tokens.size + tower.tokens.size;
+      return false;
+    };
+    const result = await remove([`Actor.${goblin.id}`, first.uuid, far.uuid, second.uuid]);
+    assert.deepEqual(result, {
+      deleted: 4,
+      documents: [
+        { uuid: first.uuid, name: "Goblin" },
+        { uuid: second.uuid, name: "Goblin" },
+        { uuid: far.uuid, name: "Goblin" },
+        { uuid: `Actor.${goblin.id}`, name: "Goblin" }
+      ]
+    });
+    assert.deepEqual([tokensLeft, world.actors.size], [0, 0]);
+  });
+
+  it("leaves an actor whose token a hook kept, and deletes the tokens that went", async () => {
+    const cellar = world.addScene({ name: "Cellar" });
+    const goblin = world.addActor({ name: "Goblin", flags: MANAGED });
+    const [kept, gone] = ["Kept", "Gone"].map((name) =>
+      world.addToken(cellar, { name, actorId: goblin.id, flags: MANAGED })
+    );
+    world.control.vetoTokenDelete = (token) => token.name === "Kept";
+    const result = await remove([`Actor.${goblin.id}`, kept.uuid, gone.uuid]);
+    assert.deepEqual(result, { deleted: 1, documents: [{ uuid: gone.uuid, name: "Gone" }] });
+    assert.deepEqual([world.actors.size, [...cellar.tokens.keys()], world.log.actorDeletes], [1, [kept.id], []]);
+  });
+
   it("does not delete the user the bridge works as, nor a Setting", async () => {
     world.addDocument("User", { _id: "user1", name: "Gamemaster", role: 4 });
     const ada = world.addDocument("User", { name: "Ada" });

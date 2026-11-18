@@ -12,7 +12,9 @@ import { hasPath, sameData } from "./data-diff.mjs";
  *   document that is created and of every document given inside the data of another
  * @property {(document: any, data: Record<string, any>, remove: readonly string[]) => string | null} [update] why the
  *   document is not changed this way
- * @property {(document: any) => string | null} [remove] why the document is not deleted
+ * @property {(document: any, going: (other: any) => boolean) => string | null} [remove] why the document is not
+ *   deleted. `going` says of another document whether the same call deletes it
+ * @property {boolean} [last] deleted after the other documents of a call, which may be what stands in its way
  */
 
 const isBlank = (value) => typeof value !== "string" || value.trim() === "";
@@ -139,16 +141,17 @@ const RULES = Object.freeze({
       actor.isToken
         ? `${actor.uuid} is the actor of a token. Its data is that token's own changes to its world actor, which Foundry stores another way than an actor's: change it with ensure_actor, by the same UUID as actor.`
         : null,
-    remove: (actor) => {
+    remove: (actor, going) => {
       if (actor.isToken) {
         return `${actor.uuid} is the actor of a token, and goes with its token: delete the token with delete_tokens.`;
       }
       if (actor.pack) return null;
-      const scenes = scenesWithTokensOf(actor);
+      const scenes = scenesWithTokensOf(actor, going);
       return scenes.length > 0
-        ? `${actor.name} (${actor.uuid}) still has tokens on ${scenes.join(", ")}, which would be left without an actor. Delete the tokens first with delete_tokens. get_actor lists them.`
+        ? `${actor.name} (${actor.uuid}) still has tokens on ${scenes.join(", ")}, which would be left without an actor. Delete the tokens first with delete_tokens, or give their UUIDs in the same call. get_actor lists them.`
         : null;
-    }
+    },
+    last: true
   }
 });
 
