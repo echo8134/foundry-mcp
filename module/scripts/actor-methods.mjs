@@ -1,59 +1,33 @@
 import { derivedValues } from "./actor-data.mjs";
 import { dropAt } from "./data-diff.mjs";
-import { checkType, systemTypes } from "./document-access.mjs";
+import { folderPathOf, resolveDocument } from "./document-access.mjs";
+import { listDocuments } from "./document-methods.mjs";
 import { MethodError } from "./errors.mjs";
-import { folderPath, folderScope } from "./folders.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
-import { folderRecords, takenBack } from "./world.mjs";
+import { takenBack } from "./world.mjs";
 
-const MAX_ACTORS = 200;
-
-const byFolderThenName = (a, b) =>
-  a.path.join("\0").localeCompare(b.path.join("\0")) || a.actor.name.localeCompare(b.actor.name);
-
+/** The world's actors as list_documents lists them, each with the number a Dungeon Master picks an actor by. */
 export async function listActors({ folder, type, name }) {
-  if (type !== undefined) checkType(systemTypes("Actor"), type, "actor type");
-  const folders = folderRecords("Actor");
-  const scope = folderScope(folders, folder);
-  if (!scope) throw new MethodError("not_found", `No actor folder at path ${JSON.stringify(folder)}.`);
-  const needle = name?.toLocaleLowerCase();
-  const matched = game.actors
-    .map((actor) => ({ actor, path: folderPath(folders, actor.folder?.id ?? null) ?? [] }))
-    .filter(
-      ({ actor, path }) =>
-        scope.inScope(path) &&
-        (type === undefined || actor.type === type) &&
-        (!needle || actor.name.toLocaleLowerCase().includes(needle))
-    )
-    .sort(byFolderThenName);
-  const actors = matched.slice(0, MAX_ACTORS).map(({ actor, path }) => {
-    const details = actor.system?.details;
+  const listed = await listDocuments({ type: "Actor", folder, name, subtype: type });
+  const actors = listed.documents.map(({ uuid: _uuid, ...entry }) => {
+    const details = game.actors.get(entry.id).system?.details;
     return {
-      id: actor.id,
-      name: actor.name,
-      type: actor.type,
-      folder: path,
-      managed: isManaged(actor),
-      ...(actor.type === "npc" && typeof details?.cr === "number" && { cr: details.cr }),
-      ...(actor.type === "character" && typeof details?.level === "number" && { level: details.level })
+      ...entry,
+      ...(entry.type === "npc" && typeof details?.cr === "number" && { cr: details.cr }),
+      ...(entry.type === "character" && typeof details?.level === "number" && { level: details.level })
     };
   });
-  return { folders: scope.folders, actors, total: matched.length, truncated: matched.length > MAX_ACTORS };
+  return { folders: listed.folders, actors, total: listed.total, truncated: listed.truncated };
 }
 
+/** An actor by the id of a world actor, or by the UUID of any actor. */
 export async function resolveActor(ref) {
   if (!ref.includes(".")) {
     const actor = game.actors.get(ref);
     if (actor) return actor;
     throw new MethodError("not_found", `No world actor with id ${ref}. Pass an id from list_actors, or a UUID.`);
   }
-  let document;
-  try {
-    document = await foundry.utils.fromUuid(ref);
-  } catch (error) {
-    throw new MethodError("not_found", `Foundry could not resolve the UUID ${ref}: ${error.message}`);
-  }
-  if (!document) throw new MethodError("not_found", `Nothing exists at the UUID ${ref}.`);
+  const document = await resolveDocument(ref);
   if (document.documentName !== "Actor") {
     throw new MethodError("invalid_params", `The UUID ${ref} is a ${document.documentName}, not an Actor.`);
   }
@@ -61,10 +35,7 @@ export async function resolveActor(ref) {
 }
 
 /** The folder path of a world actor. An actor in a compendium or of a token has none here. */
-export function actorFolderPath(actor) {
-  if (actor.pack || actor.isToken) return [];
-  return folderPath(folderRecords("Actor"), actor.folder?.id ?? null) ?? [];
-}
+export const actorFolderPath = (actor) => (actor.pack || actor.isToken ? [] : folderPathOf(actor));
 
 /**
  * An actor's own data without the bridge's own flag on the prototype token, which Foundry's Assign Token copies there

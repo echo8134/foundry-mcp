@@ -266,7 +266,7 @@ describe("get_actor", () => {
     await assert.rejects(viaTool("get_actor", { actor: "Actor.nobody" }), refused("not_found", /Actor\.nobody/));
     await assert.rejects(
       viaTool("get_actor", { actor: "Broken.unexpected input" }),
-      refused("not_found", /could not resolve the UUID Broken\.unexpected input: unexpected input/)
+      refused("not_found", /^Nothing exists at the UUID Broken\.unexpected input\./)
     );
     const [scimitar] = goblin.items.values();
     await assert.rejects(

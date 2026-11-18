@@ -4,7 +4,9 @@
 import { DOCUMENT_TYPES } from "./document-types.mjs";
 import { embeddedNamesOf } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
+import { folderPath } from "./folders.mjs";
 import { classChain } from "./schema.mjs";
+import { folderRecords, foldersAsRecords } from "./world.mjs";
 import { refuse } from "./write-checks.mjs";
 
 /**
@@ -63,8 +65,11 @@ const holdersOf = (type) =>
     return cls !== undefined && embeddedNamesOf(cls).includes(type);
   });
 
-/** fromUuid loads a compendium document, and resolves null where nothing is (client/utils/helpers.mjs:172-183). */
-async function fromUuid(uuid) {
+/**
+ * The document at a UUID, or null where nothing is. Foundry's fromUuid loads a compendium document, and resolves null
+ * or throws for a UUID that leads nowhere (client/utils/helpers.mjs:172-183).
+ */
+export async function findDocument(uuid) {
   try {
     return (await foundry.utils.fromUuid(uuid)) ?? null;
   } catch {
@@ -72,12 +77,9 @@ async function fromUuid(uuid) {
   }
 }
 
-/** The document at a UUID, or null: for a deletion, which ignores what is not there. */
-export const findDocument = fromUuid;
-
 /** @param {string} uuid @param {string} [where] the entry of the request the UUID is given in */
 export async function resolveDocument(uuid, where = "") {
-  const document = await fromUuid(uuid);
+  const document = await findDocument(uuid);
   if (document) return document;
   throw new MethodError(
     "not_found",
@@ -161,20 +163,12 @@ export async function targetOf({ type, parent: parentUuid, pack: packId }) {
   return { cls, parent: null, pack: null };
 }
 
-const MAX_FOLDER_DEPTH = 32;
+/** The folders that documents of a type lie in: those of a pack, which keeps its own, or else the world's of that type. */
+export const foldersAt = (type, pack) => (pack ? foldersAsRecords(pack.folders.values()) : folderRecords(type));
 
-/** The folder path of a document from the folders it lies in, in the world or in its pack. */
-export function folderPathOf(document) {
-  const names = [];
-  for (
-    let folder = document.folder ?? null;
-    folder && names.length < MAX_FOLDER_DEPTH;
-    folder = folder.folder ?? null
-  ) {
-    names.unshift(folder.name);
-  }
-  return names;
-}
+/** The folder path of a document: the names of the folders it lies in, from the root, in the world or in its pack. */
+export const folderPathOf = (document) =>
+  folderPath(foldersAt(document.documentName, packOf(document)), document.folder?.id ?? null) ?? [];
 
 /** What a list says of one document: enough to tell it from the others and to read it with get_document. */
 export function shortEntry(document) {

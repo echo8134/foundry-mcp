@@ -4,6 +4,7 @@
 import {
   classOf,
   folderPathOf,
+  foldersAt,
   hasField,
   hasFolders,
   packOf,
@@ -18,7 +19,7 @@ import { embeddedFieldsOf, embeddedNamesOf } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { isManaged } from "./scope.mjs";
-import { folderRecords, foldersAsRecords, takenBack } from "./world.mjs";
+import { takenBack } from "./world.mjs";
 
 const MAX_LISTED = 200;
 
@@ -70,11 +71,8 @@ async function listedAt({ cls, parent, pack }) {
   if (parent) {
     return { all: Array.from(parent.getEmbeddedCollection(type).values(), listedDocument), folders: null };
   }
-  if (pack) {
-    const folders = hasFolders(type) ? foldersAsRecords(pack.folders.values()) : null;
-    return { all: await listedFromIndex(pack, cls), folders };
-  }
-  const folders = hasFolders(type) ? folderRecords(type) : null;
+  const folders = hasFolders(type) ? foldersAt(type, pack) : null;
+  if (pack) return { all: await listedFromIndex(pack, cls), folders };
   return { all: Array.from(game.collections.get(type).values(), listedDocument), folders };
 }
 

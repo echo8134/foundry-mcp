@@ -8,7 +8,7 @@
 // token, so its entries can be removed there, and one that is deleted for a token leaves a tombstone with it.
 
 import { dropAt, entriesToRemove, giveElementIds, updateFor, writeOutcome } from "./data-diff.mjs";
-import { systemTypes, unknownType } from "./document-access.mjs";
+import { resolveDocument, systemTypes, unknownType } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
 import { elementIdArrays, initialTypeOf } from "./field-check.mjs";
 import { asStoredEntries, withEntryId } from "./item-data.mjs";
@@ -16,6 +16,7 @@ import { idFor } from "./labels.mjs";
 import { claimNamed, FLAG_SCOPE } from "./scope.mjs";
 import {
   checkAsked,
+  forWrite,
   KINDS,
   NOT_CREATED,
   planBuilt,
@@ -257,16 +258,7 @@ async function planItemCreation(actor, entry, source, where) {
 }
 
 async function itemToCopy(from, at) {
-  let source;
-  try {
-    source = await foundry.utils.fromUuid(from);
-  } catch (error) {
-    throw new MethodError(
-      "not_found",
-      `${at}Foundry could not resolve the UUID ${from}: ${error.message} Nothing was written.`
-    );
-  }
-  if (!source) throw new MethodError("not_found", `${at}Nothing exists at the UUID ${from}. Nothing was written.`);
+  const source = await forWrite(resolveDocument(from, at));
   if (source.documentName !== "Item") {
     throw refuse(`The UUID ${from} is a ${source.documentName}, not an Item. Pass the UUID of an item as from.`, at);
   }
