@@ -22,6 +22,7 @@ import {
   KINDS,
   modelRefusal,
   refuse,
+  walkOf,
   wantedChanges,
   writeOf
 } from "./write-checks.mjs";
@@ -79,7 +80,7 @@ function build(kind, data, parent, at) {
 /** The given data with an `_id` on each element of the lists whose elements carry one, taken from `stored` by place. */
 function withElementIds(kind, given, stored, type) {
   const data = structuredClone(given);
-  const lists = elementIdArrays(schemaOf(kind), data, { type, schemaFor: kind.schemaFor });
+  const lists = elementIdArrays(schemaOf(kind), data, walkOf(type));
   giveElementIds(data, lists, stored, () => foundry.utils.randomID());
   return data;
 }

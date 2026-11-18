@@ -2,7 +2,6 @@ import { derivedValues } from "./actor-data.mjs";
 import { dropAt } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
-import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { folderRecords, takenBack } from "./world.mjs";
 
@@ -117,7 +116,7 @@ export async function getActor({ actor: ref, items = [], effects = [] }) {
     items: actor.items.map((item) => ({ id: item.id, name: item.name, type: item.type, managed: isManaged(item) })),
     itemData: items.map((id) => {
       const item = actor.items.get(id);
-      return takenBack(item, item._source, TYPED_ENTRY_SCHEMAS);
+      return takenBack(item, item._source);
     }),
     effects: actor.effects.map((effect) => ({ id: effect.id, name: effect.name, disabled: effect.disabled })),
     effectData: effects.map((id) => {

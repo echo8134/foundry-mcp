@@ -3,6 +3,7 @@ import { MethodError } from "./errors.mjs";
 import { fieldProblems } from "./field-check.mjs";
 import { resolveFolderPath } from "./folders.mjs";
 import { canonicalNodes, canonicalStyle } from "./html.mjs";
+import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
 
 export const timing = { textureLoadMs: 30_000 };
 
@@ -96,13 +97,13 @@ export function storedAgain(document, stored) {
  * system.skills.value).
  * @param {{documentName: string, type?: string, validate: (options: object) => boolean}} document
  * @param {Record<string, unknown>} stored the document's `_source`, or a part of it
- * @param {Readonly<Record<string, import("./field-check.mjs").SchemaFor>>} [schemaFor] as fieldProblems takes it
  * @returns {Record<string, unknown>}
  */
-export function takenBack(document, stored, schemaFor = {}) {
+export function takenBack(document, stored) {
   const data = storedAgain(document, stored);
   const schema = CONFIG[document.documentName].documentClass.schema;
-  for (const { path, problem } of fieldProblems(schema, data, { type: document.type, schemaFor })) {
+  const walk = { type: document.type, schemaFor: TYPED_ENTRY_SCHEMAS };
+  for (const { path, problem } of fieldProblems(schema, data, walk)) {
     if (problem === "key") dropAt(data, path);
   }
   return data;

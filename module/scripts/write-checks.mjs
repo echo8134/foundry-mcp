@@ -19,33 +19,25 @@ const OWN_FLAG = `flags.${FLAG_SCOPE}`;
 /**
  * What the checks need to know of each kind of document. `ownFlags` are the paths of the bridge's own flag: on an
  * actor also on its prototype token, because a token dropped from an actor whose prototype token has it would count
- * as bridge-made. `schemaFor` gives the data models of the typed entries the schema check cannot find by itself.
+ * as bridge-made.
  */
 export const KINDS = Object.freeze({
-  Actor: {
-    document: "Actor",
-    noun: "actor",
-    ownFlags: [OWN_FLAG, `prototypeToken.${OWN_FLAG}`],
-    schemaFor: {},
-    alsoListed: ""
-  },
+  Actor: { document: "Actor", noun: "actor", ownFlags: [OWN_FLAG, `prototypeToken.${OWN_FLAG}`], alsoListed: "" },
   Item: {
     document: "Item",
     noun: "item",
     ownFlags: [OWN_FLAG],
-    schemaFor: TYPED_ENTRY_SCHEMAS,
     alsoListed: " Those of an activity are listed with document Activity."
   },
-  ActiveEffect: { document: "ActiveEffect", noun: "effect", ownFlags: [OWN_FLAG], schemaFor: {}, alsoListed: "" }
+  ActiveEffect: { document: "ActiveEffect", noun: "effect", ownFlags: [OWN_FLAG], alsoListed: "" }
 });
 
 const schemaOf = (kind) => CONFIG[kind.document].documentClass.schema;
 
 /**
  * The kind of any document name. Actor, Item and ActiveEffect keep their entries above. Any other document goes by its
- * name, has the bridge's own flag where its schema has flags (a Setting has none, common/documents/setting.mjs:39-49),
- * and has an entry below a dnd5e TypeDataField5e checked by the data model that field picks for it, wherever the
- * system put such a field.
+ * name, and has the bridge's own flag where its schema has flags (a Setting has none,
+ * common/documents/setting.mjs:39-49).
  */
 export function kindOf(documentName) {
   if (Object.hasOwn(KINDS, documentName)) return KINDS[documentName];
@@ -54,13 +46,17 @@ export function kindOf(documentName) {
     document: documentName,
     noun: documentName,
     ownFlags: Object.hasOwn(fields, "flags") ? [OWN_FLAG] : [],
-    schemaFor: TYPED_ENTRY_SCHEMAS,
     alsoListed: ""
   };
 }
 
-/** The `schemaFor` of the documents of a name, for a check that goes on into the embedded documents given with one. */
-export const embeddedSchemas = (documentName) => kindOf(documentName).schemaFor;
+/**
+ * How the schema walk reads the data of a document of a type. An entry below a dnd5e TypeDataField5e is checked by
+ * the data model that field picks for it, wherever the system put such a field: in dnd5e 6.1.0 only an item's
+ * activities and advancement hold one. With `embedded` the walk goes on into the embedded documents given in the data.
+ * @returns {import("./field-check.mjs").WalkOptions}
+ */
+export const walkOf = (type, embedded = false) => ({ type, schemaFor: TYPED_ENTRY_SCHEMAS, embedded });
 
 export const refuse = (message, where = "") =>
   new MethodError("invalid_params", `${where}${message} Nothing was written.`);
@@ -69,8 +65,8 @@ export const modelRefusal = (kind, error, where = "") =>
   refuse(`Foundry's ${kind.noun} model refuses the data: ${error.message}`, where);
 
 /**
- * The given data and the entries to remove, against the fields the document stores. Reads only. With `embedded`, as
- * fieldProblems takes it, the embedded documents given inside the data are checked too, and without it refused.
+ * The given data and the entries to remove, against the fields the document stores. Reads only. With `embedded` the
+ * embedded documents given inside the data are checked too, and without it refused.
  */
 export function checkAsked(kind, asked, remove, type, where = "", embedded) {
   const given = kind.ownFlags.filter((path) => hasPath(asked, path));
@@ -80,7 +76,7 @@ export function checkAsked(kind, asked, remove, type, where = "", embedded) {
       where
     );
   }
-  const problems = fieldProblems(schemaOf(kind), asked, { type, schemaFor: kind.schemaFor, embedded });
+  const problems = fieldProblems(schemaOf(kind), asked, walkOf(type, embedded));
   if (problems.length > 0) {
     const ofType = type === undefined ? "" : ` and type ${type}`;
     throw refuse(
@@ -136,5 +132,5 @@ export function checkRemoval(kind, document, remove, where = "", advice = "") {
 export const writeOf = (kind, wanted, remove, type, given = wanted, embedded) => ({
   wanted,
   remove,
-  same: sameHtml(schemaOf(kind), given, canonicalHtml, { type, schemaFor: kind.schemaFor, embedded })
+  same: sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded))
 });

@@ -22,14 +22,10 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   name alone does not tell the fields apart: dnd5e's activities and advancements are both maps of TypeDataField5e.
  *   `heldType` is the type of the behavior the entry is the config of, which has no type of its own.
  */
-/**
- * @typedef {(documentName: string) => Readonly<Record<string, SchemaFor>>} EmbeddedSchemas the `schemaFor` of the
- *   documents of a name, for a walk that goes on into the embedded documents given inside the data
- */
 /** @typedef {{documentName: string, path: string, data: Record<string, unknown>}} GivenDocument a document given inside the data of another: its document name, where it lies, and its own data */
 /**
  * @typedef {{type?: string, heldType?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[],
- *   html: Set<string>, idArrays: Set<string>, documents: GivenDocument[], embedded?: EmbeddedSchemas,
+ *   html: Set<string>, idArrays: Set<string>, documents: GivenDocument[], embedded?: boolean,
  *   inEmbedded?: boolean}} Walk
  *   `html` collects the paths of the leaves that lie on an HTMLField, `idArrays` those of the lists whose elements
  *   are each given an `_id` of their own, and `documents` the documents the walk went into. Without `embedded` an
@@ -107,7 +103,7 @@ function embeddedWalk(schema, documentName, value, path, walk) {
   walk.documents.push({ documentName, path, data: value });
   const initial = schema.fields?.type?.initial;
   const type = typeof value.type === "string" ? value.type : typeof initial === "string" ? initial : undefined;
-  return { ...walk, type, heldType: undefined, schemaFor: walk.embedded(documentName), inEmbedded: true };
+  return { ...walk, type, heldType: undefined, inEmbedded: true };
 }
 
 /** @param {any} field @param {unknown} value @param {string} path @param {Walk} walk */
@@ -202,7 +198,7 @@ const STRUCTURES = Object.freeze({
 });
 
 /**
- * @typedef {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>, embedded?: EmbeddedSchemas}} WalkOptions
+ * @typedef {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>, embedded?: boolean}} WalkOptions
  *   `type` is the document type, which picks the data model of a TypeDataField such as `system`. `schemaFor` maps the
  *   class name of a dnd5e TypeDataField5e, or of a class that extends it, to the schema of each given entry; without
  *   one, any data below such a field is the problem `unchecked`. With `embedded` the walk goes on into the embedded

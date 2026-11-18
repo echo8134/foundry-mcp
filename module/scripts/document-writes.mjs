@@ -29,10 +29,10 @@ import {
   checkImage,
   checkKeptAsGiven,
   checkRemoval,
-  embeddedSchemas,
   kindOf,
   modelRefusal,
   refuse,
+  walkOf,
   wantedChanges,
   writeOf
 } from "./write-checks.mjs";
@@ -102,11 +102,10 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const asked = withoutOwnFlags(given, cls, where);
   const type = typeOfNew(cls, asked, where);
   refuseRuled(rulesOf(name).create?.(asked), where);
-  const walked = { type, schemaFor: kind.schemaFor, embedded: embeddedSchemas };
-  for (const { documentName, path, data } of documentsWithin(cls.schema, asked, walked)) {
+  for (const { documentName, path, data } of documentsWithin(cls.schema, asked, walkOf(type, true))) {
     refuseRuled(rulesOf(documentName).create?.(data), `${where}${path}: `);
   }
-  checkAsked(kind, asked, [], type, where, embeddedSchemas);
+  checkAsked(kind, asked, [], type, where, true);
   const data = asBridgeMade(asked, cls);
   let built;
   try {
@@ -120,7 +119,7 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const wanted = pickData(byPosition(built.toObject(), cls), shape);
   checkKeptAsGiven(shape, wanted, where);
   await checkImage(wanted.img, where);
-  const write = writeOf(kind, wanted, [], type, asked, embeddedSchemas);
+  const write = writeOf(kind, wanted, [], type, asked, true);
   return { data, write: { ...write, unseen: secretsGiven(name, wanted) } };
 }
 

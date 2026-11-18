@@ -18,7 +18,7 @@ import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { isManaged } from "./scope.mjs";
 import { folderRecords, foldersAsRecords, takenBack } from "./world.mjs";
-import { kindOf, refuse } from "./write-checks.mjs";
+import { refuse } from "./write-checks.mjs";
 
 const MAX_LISTED = 200;
 
@@ -164,7 +164,7 @@ function storedForWrite(document) {
   const embedded = embeddedFieldsOf(cls).map(({ field }) => field);
   // toObject, not structuredClone: measured, the stored data of some documents cannot be structured-cloned.
   const stored = Object.fromEntries(Object.entries(document.toObject()).filter(([key]) => !embedded.includes(key)));
-  return takenBack(document, withoutSecrets(document.documentName, stored), kindOf(document.documentName).schemaFor);
+  return takenBack(document, withoutSecrets(document.documentName, stored));
 }
 
 /**

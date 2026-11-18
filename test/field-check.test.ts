@@ -239,7 +239,7 @@ describe("fieldProblems with the embedded documents given inside the data", () =
     delta: new EmbeddedDocumentField(delta),
     loose: new EmbeddedCollectionField({ documentName: "Loose" })
   });
-  const embedded = () => ({});
+  const embedded = true;
   const problems = (data: Record<string, unknown>) =>
     fieldProblems(entry, data, { embedded }).map(({ path, problem }) => [path, problem]);
 
