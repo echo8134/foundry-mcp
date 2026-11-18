@@ -283,6 +283,17 @@ describe("get_scene_image of one level", () => {
     assert.equal(drawn.find((call) => call.op === "fillRect")!.fillStyle, "#999999");
   });
 
+  it("refuses a scene without levels, of which Foundry renders nothing, before rendering", async () => {
+    stubCanvas();
+    scene.levels.clear();
+    scene.initialLevel = undefined;
+    await assert.rejects(
+      methods.get_scene_image({ sceneId: scene.id }),
+      refused("invalid_params", /^The scene Cathedral has no levels\. Foundry renders a scene by one of its levels/)
+    );
+    assert.deepEqual(world.log.thumbnailLevels, []);
+  });
+
   it("refuses a level whose foreground image does not load, given or not, and a level the scene does not have, before rendering", async () => {
     stubCanvas();
     scene.levels.get("upper")._source.foreground.src = "maps/missing.webp";

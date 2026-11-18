@@ -166,6 +166,14 @@ async function getSceneImage({
   const scene = resolveScene(sceneId);
   if (levelId !== undefined) checkLevels(scene, [levelId]);
   const level = levelId === undefined ? scene.initialLevel : scene.levels.get(levelId);
+  // A scene whose levels were all deleted has no initial level (client/documents/level.mjs:101-103), and
+  // Scene#createThumbnail throws without one (client/documents/scene.mjs:1712-1714).
+  if (!level) {
+    throw new MethodError(
+      "invalid_params",
+      `The scene ${scene.name} has no levels. Foundry renders a scene by one of its levels: create one with create_documents (type Level, parent the scene).`
+    );
+  }
   const rect = sceneRect(scene);
   const scale = Math.min(1, maxSize / Math.max(rect.width, rect.height));
   const width = Math.max(1, Math.round(rect.width * scale));
