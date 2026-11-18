@@ -1,8 +1,18 @@
-// The checks every write of a document runs before anything is written, and the wording of their refusals. `where`
-// names the entry of the request a refusal is about, and is empty for the one document a call is about.
+// The checks every write of a document runs before anything is written, and the wording of their refusals and of what
+// a failed write says. planUpdate runs them for a document that exists and planBuilt for a new one. `where` names the
+// entry of the request a refusal is about, and is empty for the one document a call is about.
 
-import { dropAt, explainRecasts, givesValueOn, hasPath, recastLeaves, sameData, updateFor } from "./data-diff.mjs";
-import { mapGiven } from "./embedded.mjs";
+import {
+  dropAt,
+  explainRecasts,
+  givesValueOn,
+  hasPath,
+  pickData,
+  recastLeaves,
+  sameData,
+  updateFor
+} from "./data-diff.mjs";
+import { byPosition, mapGiven } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import {
   explainFieldProblems,
@@ -76,7 +86,7 @@ export const forWrite = (lookup) =>
     throw error instanceof MethodError ? new MethodError(error.code, `${error.message} ${UNWRITTEN}`) : error;
   });
 
-export const modelRefusal = (kind, error, where = "") =>
+const modelRefusal = (kind, error, where) =>
   refuse(`Foundry's ${kind.noun} model refuses the data: ${error.message}`, where);
 
 /**
@@ -113,10 +123,13 @@ function ownFlagsGiven(kind, asked) {
 }
 
 /**
- * The given data and the entries to remove, against the fields the document stores. Reads only. With `embedded` the
- * embedded documents given inside the data are checked too, and without it refused.
+ * The given data and the entries to remove, against the fields the document stores. Reads only.
+ * @param {{document: string, ownFlags: readonly string[], alsoListed: string}} kind
+ * @param {Record<string, any>} asked
+ * @param {{remove?: readonly string[], type?: string, where?: string, embedded?: boolean}} [options] with `embedded`
+ *   the embedded documents given inside the data are checked too, and without it refused
  */
-export function checkAsked(kind, asked, remove, type, where = "", embedded) {
+export function checkAsked(kind, asked, { remove = [], type, where = "", embedded = false } = {}) {
   const given = ownFlagsGiven(kind, asked);
   if (given.length > 0) {
     throw refuse(
@@ -142,28 +155,19 @@ export function checkAsked(kind, asked, remove, type, where = "", embedded) {
   }
 }
 
-export function checkKeptAsGiven(asked, wanted, where = "") {
+function checkKeptAsGiven(asked, wanted, where) {
   const recasts = recastLeaves(asked, wanted);
   if (recasts.length > 0) throw refuse(`${explainRecasts(recasts)} Give each value as Foundry stores it.`, where);
 }
 
 /** An image may be null, which is no image and nothing to load (common/data/fields.mjs:3742). */
-export async function checkImage(img, where = "") {
+async function checkImage(img, where) {
   if (typeof img === "string" && !(await loadTexture(img)))
     throw refuse(`The image ${img} could not be loaded.`, where);
 }
 
-/** The given changes as Foundry would store them on the document, or the refusal of its model. */
-export function wantedChanges(kind, document, asked, where = "") {
-  try {
-    return cleanedChanges(document, asked);
-  } catch (error) {
-    throw modelRefusal(kind, error, where);
-  }
-}
-
 /** A dry run of the removal, which Foundry's model may refuse although each path names an entry. */
-export function checkRemoval(kind, document, remove, where = "", advice = "") {
+function checkRemoval(kind, document, remove, where, advice) {
   const removal = updateFor({ wanted: {}, remove }, document._source, _del);
   if (!removal.writes) return;
   try {
@@ -176,9 +180,80 @@ export function checkRemoval(kind, document, remove, where = "", advice = "") {
 /**
  * What a write is to bring about, with the HTML fields of the wanted data compared by what they say. `given` is the
  * data the HTML fields are found in, where the wanted data is in another shape than the schema describes.
+ * @returns {import("./data-diff.mjs").Asked}
  */
-export const writeOf = (kind, wanted, remove, type, given = wanted, embedded) => ({
+const writeOf = (kind, wanted, { remove, type, given = wanted, embedded = false }) => ({
   wanted,
   remove,
   same: sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded))
 });
+
+/**
+ * Every check of a change to a document that exists, and what the change is to bring about: the asked data against
+ * the fields, the changes as Foundry would store them, no value recast, an image that loads, and a removal the model
+ * takes. Reads only.
+ * @param {{document: string, noun: string, ownFlags: readonly string[], alsoListed: string}} kind
+ * @param {any} document
+ * @param {Record<string, any>} asked
+ * @param {{remove?: readonly string[], where?: string, advice?: string}} [options] `advice` ends the refusal of a
+ *   removal that Foundry's model does not take
+ * @returns {Promise<import("./data-diff.mjs").Asked>}
+ */
+export async function planUpdate(kind, document, asked, { remove = [], where = "", advice = "" } = {}) {
+  const { type } = document;
+  checkAsked(kind, asked, { remove, type, where });
+  let wanted;
+  try {
+    wanted = cleanedChanges(document, asked);
+  } catch (error) {
+    throw modelRefusal(kind, error, where);
+  }
+  checkKeptAsGiven(asked, wanted, where);
+  if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
+  checkRemoval(kind, document, remove, where, advice);
+  return writeOf(kind, wanted, { remove, type });
+}
+
+/**
+ * The checks of a new document that need it built: Foundry's model takes the data, no asked value is recast, and its
+ * image loads. The document is built in memory with its parent and pack, as Foundry builds one before it creates it
+ * (client/data/client-backend.mjs:91-94). An embedded document given with it is compared by its place in the list,
+ * and not by the id Foundry gives it. Reads only.
+ * @param {{document: string, noun: string}} kind
+ * @param {any} cls the document class
+ * @param {Record<string, any>} data what the document is created from: the asked data, and what the caller adds to it
+ * @param {Record<string, any>} asked the data a caller asked for, which the stored document is compared with
+ * @param {{remove?: readonly string[], parent?: any, pack?: string | null, where?: string}} [options] `remove` names
+ *   the entries the caller took out of the data, which the stored document is to lack
+ * @returns {Promise<{built: any, write: import("./data-diff.mjs").Asked}>} the unsaved document, and what its
+ *   creation is to bring about
+ */
+export async function planBuilt(kind, cls, data, asked, { remove = [], parent = null, pack = null, where = "" } = {}) {
+  let built;
+  try {
+    // The constructor keeps the object it is given as the stored data and cleans it in place.
+    built = new cls(structuredClone(data), { parent, pack });
+  } catch (error) {
+    throw modelRefusal(kind, error, where);
+  }
+  const shape = byPosition(asked, cls);
+  const wanted = pickData(byPosition(built.toObject(), cls), shape);
+  checkKeptAsGiven(shape, wanted, where);
+  await checkImage(wanted.img, where);
+  return { built, write: writeOf(kind, wanted, { remove, type: built.type, given: asked, embedded: true }) };
+}
+
+/** What an entry of a result says in place of its document when Foundry made none for it. */
+export const createdNothing = (what) =>
+  `Foundry created ${what} and reported no error, which is what it does when the system or a module refuses a creation.`;
+
+export const NOT_CREATED = `foundry_error: ${createdNothing("nothing for this entry")}`;
+
+/**
+ * What the error of a failed update says of the stored data, where Foundry may have applied a part of the update.
+ * @param {readonly string[]} written what changed, each with its paths
+ */
+export const changedInStorage = (written) =>
+  written.length > 0 ? `Changed in the stored data: ${written.join("; ")}.` : "Nothing was changed in the stored data.";
+
+export const RUN_AGAIN = "Running the call again writes what still differs.";

@@ -1,20 +1,19 @@
 import { derivedValues, withCreateDefaults } from "./actor-data.mjs";
 import { actorFolderPath, checkType, resolveActor, systemTypes } from "./actor-methods.mjs";
-import { dropAt, entriesToRemove, hasPath, pickData, updateFor, writeOutcome } from "./data-diff.mjs";
+import { dropAt, entriesToRemove, hasPath, updateFor, writeOutcome } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { hasEmbedded, planEmbedded, writeEmbedded } from "./item-writes.mjs";
 import { claimNamed, FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { createMissingFolders, findFolder } from "./world.mjs";
 import {
+  changedInStorage,
   checkAsked,
-  checkImage,
-  checkKeptAsGiven,
-  checkRemoval,
+  createdNothing,
   KINDS,
-  modelRefusal,
-  refuse,
-  wantedChanges,
-  writeOf
+  planBuilt,
+  planUpdate,
+  RUN_AGAIN,
+  refuse
 } from "./write-checks.mjs";
 
 /** The inputs of ensure_actor that are the actor's own stored data, each under the name of its stored field. */
@@ -110,24 +109,16 @@ async function planChange(actor, request, place) {
       `${actor.uuid} is the actor of a token. Its data is that token's own changes to its world actor, which have no ${notHere.join(" and no ")}. Leave ${notHere.join(" and ")} out, or pass the world actor.`
     );
   }
-  const asked = askedData(request);
-  checkAsked(KINDS.Actor, asked, remove, actor.type);
-  if (actor.isToken) checkTokenRemovals(actor, remove);
-  const wanted = wantedChanges(KINDS.Actor, actor, asked);
-  checkKeptAsGiven(asked, wanted);
-  if (wanted.img !== actor._source.img) await checkImage(wanted.img);
   const ownership = remove.some((path) => path.startsWith("ownership."));
-  checkRemoval(
-    KINDS.Actor,
-    actor,
+  const write = await planUpdate(KINDS.Actor, actor, askedData(request), {
     remove,
-    "",
-    ownership ? " To take a user's level away, give it as -1 in ownership instead." : ""
-  );
+    advice: ownership ? " To take a user's level away, give it as -1 in ownership instead." : ""
+  });
+  if (actor.isToken) checkTokenRemovals(actor, remove);
   return {
     actor,
     data: null,
-    write: writeOf(KINDS.Actor, wanted, remove, actor.type),
+    write,
     place,
     embedded: hasEmbedded(request) ? await planEmbedded(actor, request) : null
   };
@@ -156,7 +147,7 @@ async function planCreation(request, place) {
   }
   checkType(systemTypes("Actor"), type, "actor type");
   const given = askedData(request);
-  checkAsked(KINDS.Actor, given, remove, type);
+  checkAsked(KINDS.Actor, given, { remove, type });
   const asked = withCreateDefaults(type, given);
   // fromCompendium leaves out the id, the folder and the sort of the source, resets the ownership to the current
   // user, and records the source of a compendium actor (client/documents/abstract/world-collection.mjs:109-134).
@@ -165,19 +156,10 @@ async function planCreation(request, place) {
   for (const path of entriesToRemove(remove, data)) dropAt(data, path);
   data.type = type;
   data.flags = { ...data.flags, [FLAG_SCOPE]: { managed: true } };
-  let built;
-  try {
-    // The constructor keeps the object it is given as the stored data and cleans it in place.
-    built = new CONFIG.Actor.documentClass(structuredClone(data));
-  } catch (error) {
-    throw modelRefusal(KINDS.Actor, error);
-  }
-  const wanted = pickData(built._source, asked);
-  checkKeptAsGiven(asked, wanted);
-  await checkImage(wanted.img);
+  const { built, write } = await planBuilt(KINDS.Actor, CONFIG.Actor.documentClass, data, asked, { remove });
   // The items and effects are checked on the actor built from the data, and planned again on the one Foundry makes.
   if (hasEmbedded(request)) await planEmbedded(built, request);
-  return { actor: null, data, write: writeOf(KINDS.Actor, wanted, remove, type), place, embedded: null };
+  return { actor: null, data, write, place, embedded: null };
 }
 
 async function planActor(request) {
@@ -203,10 +185,7 @@ async function createActor(data) {
   // Foundry skips a document that fails its validation or that a hook refuses, and resolves without it
   // (client/data/client-backend.mjs:91-108).
   if (!created) {
-    throw new MethodError(
-      "foundry_error",
-      "Foundry created no actor and reported no error, which is what it does when a hook or a module refuses the creation. No actor was written."
-    );
+    throw new MethodError("foundry_error", `${createdNothing("no actor")} No actor was written.`);
   }
   return created;
 }
@@ -221,13 +200,10 @@ async function changeActor(actor, write, before) {
     await (actor.isToken ? actor.token.update({ delta: update }) : actor.update(update));
   } catch (error) {
     const { changed } = writeOutcome(write, before, actor._source);
-    const written =
-      changed.length > 0
-        ? `Changed in the stored data: ${changed.join(", ")}.`
-        : "Nothing was changed in the stored data.";
+    const written = changedInStorage(changed.length > 0 ? [changed.join(", ")] : []);
     throw new MethodError(
       "foundry_error",
-      `Foundry failed while updating ${actor.name} (${error.message}). ${written} Running the call again writes what still differs.`
+      `Foundry failed while updating ${actor.name} (${error.message}). ${written} ${RUN_AGAIN}`
     );
   }
 }

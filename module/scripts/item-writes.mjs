@@ -8,7 +8,7 @@
 // token, so its entries can be removed there, and one that is deleted for a token leaves a tombstone with it.
 
 import { systemTypes } from "./actor-methods.mjs";
-import { dropAt, entriesToRemove, giveElementIds, pickData, updateFor, writeOutcome } from "./data-diff.mjs";
+import { dropAt, entriesToRemove, giveElementIds, updateFor, writeOutcome } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { elementIdArrays } from "./field-check.mjs";
 import { asStoredEntries, withEntryId } from "./item-data.mjs";
@@ -16,16 +16,14 @@ import { idFor } from "./labels.mjs";
 import { claimNamed, FLAG_SCOPE } from "./scope.mjs";
 import {
   checkAsked,
-  checkImage,
-  checkKeptAsGiven,
-  checkRemoval,
   KINDS,
-  modelRefusal,
+  NOT_CREATED,
+  planBuilt,
+  planUpdate,
+  RUN_AGAIN,
   refuse,
   walkOf,
-  wantedChanges,
-  withoutOwnFlags,
-  writeOf
+  withoutOwnFlags
 } from "./write-checks.mjs";
 
 /**
@@ -49,8 +47,7 @@ const ITEM_DATA_KEYS = Object.freeze(["name", "img", "system", "flags"]);
 
 const EMBEDDED_INPUTS = Object.freeze(["items", "removeItems", "effects", "removeEffects"]);
 
-const NOT_CREATED =
-  "foundry_error: Foundry created nothing for this entry and reported no error, which is what it does when the system or a module refuses a creation. dnd5e gives a character one species and one background, and a group actor no features.";
+const NOT_CREATED_HERE = `${NOT_CREATED} dnd5e gives a character one species and one background, and a group actor no features.`;
 
 export const hasEmbedded = (request) => EMBEDDED_INPUTS.some((key) => request[key] !== undefined);
 
@@ -67,16 +64,6 @@ const entryTypes = () => ({
   activities: Object.keys(CONFIG.DND5E.activityTypes),
   advancement: Object.keys(CONFIG.DND5E.advancementTypes)
 });
-
-/** An unsaved document, which Foundry's class refuses to build from data its model does not take. */
-function build(kind, data, parent, at) {
-  try {
-    // The constructor keeps the object it is given as the stored data and cleans it in place.
-    return new CONFIG[kind.document].documentClass(structuredClone(data), { parent });
-  } catch (error) {
-    throw modelRefusal(kind, error, at);
-  }
-}
 
 /** The given data with an `_id` on each element of the lists whose elements carry one, taken from `stored` by place. */
 function withElementIds(kind, given, stored, type) {
@@ -130,10 +117,6 @@ async function planEffectChange(effect, given, where) {
   }
   const stored = effect._source;
   const asked = withElementIds(kind, withoutOwnFlags(kind, given, stored), stored, effect.type);
-  checkAsked(kind, asked, [], effect.type, at);
-  const wanted = wantedChanges(kind, effect, asked, at);
-  checkKeptAsGiven(asked, wanted, at);
-  if (wanted.img !== stored.img) await checkImage(wanted.img, at);
   return {
     where,
     key: effect.id,
@@ -142,7 +125,7 @@ async function planEffectChange(effect, given, where) {
     id: effect.id,
     name: effect.name,
     type: effect.type,
-    write: writeOf(kind, wanted, [], effect.type),
+    write: await planUpdate(kind, effect, asked, { where: at }),
     effects: [],
     removal: null
   };
@@ -156,12 +139,9 @@ async function planEffectCreation(parent, id, given, where) {
   const type = given.type ?? "base";
   if (!types.includes(type)) throw refuse(`Unknown effect type "${type}". Use one of: ${types.join(", ")}.`, at);
   const asked = withElementIds(kind, given, {}, type);
-  checkAsked(kind, asked, [], type, at);
+  checkAsked(kind, asked, { type, where: at });
   const data = { ...structuredClone(asked), _id: id, flags: { ...asked.flags, [FLAG_SCOPE]: { managed: true } } };
-  const built = build(kind, data, parent, at);
-  const wanted = pickData(built._source, asked);
-  checkKeptAsGiven(asked, wanted, at);
-  await checkImage(wanted.img, at);
+  const { built, write } = await planBuilt(kind, CONFIG.ActiveEffect.documentClass, data, asked, { parent, where: at });
   return {
     where,
     key: id,
@@ -170,7 +150,7 @@ async function planEffectCreation(parent, id, given, where) {
     id,
     name: built.name,
     type,
-    write: writeOf(kind, wanted, [], type),
+    write,
     effects: [],
     removal: null
   };
@@ -210,14 +190,8 @@ async function planItemChange(item, entry, where) {
       at
     );
   }
-  const stored = item._source;
-  const asked = askedItemData(entry, stored, item.type, at);
-  const removed = remove.map(withEntryId);
-  checkAsked(kind, asked, removed, item.type, at);
-  const wanted = wantedChanges(kind, item, asked, at);
-  checkKeptAsGiven(asked, wanted, at);
-  if (wanted.img !== stored.img) await checkImage(wanted.img, at);
-  checkRemoval(kind, item, removed, at);
+  const asked = askedItemData(entry, item._source, item.type, at);
+  const write = await planUpdate(kind, item, asked, { remove: remove.map(withEntryId), where: at });
   const plans = await planEffects(item, effects, `${where}.effects`);
   const ids = removeEffects?.map(idFor) ?? [];
   refuseChangedAndRemoved(plans, ids, `${where}.removeEffects`, "effect");
@@ -229,7 +203,7 @@ async function planItemChange(item, entry, where) {
     id: item.id,
     name: item.name,
     type: item.type,
-    write: writeOf(kind, wanted, removed, item.type),
+    write,
     effects: plans,
     removal: removeEffects ? { ids, dropped: 0 } : null
   };
@@ -244,7 +218,7 @@ async function planItemCreation(actor, entry, source, where) {
   const start = source ? game.items.fromCompendium(source, { clearFolder: true }) : {};
   const asked = askedItemData(entry, start, type, at);
   const removed = remove.map(withEntryId);
-  checkAsked(kind, asked, removed, type, at);
+  checkAsked(kind, asked, { remove: removed, type, where: at });
   const data = foundry.utils.mergeObject(start, structuredClone(asked));
   for (const path of entriesToRemove(removed, data)) dropAt(data, path);
   data.type = type;
@@ -253,7 +227,11 @@ async function planItemCreation(actor, entry, source, where) {
   const dropped = new Set(removeEffects?.map(idFor));
   const kept = copied.filter((effect) => !dropped.has(effect._id));
   data.effects = kept;
-  const built = build(kind, data, actor, at);
+  const { built, write } = await planBuilt(kind, CONFIG.Item.documentClass, data, asked, {
+    remove: removed,
+    parent: actor,
+    where: at
+  });
   // The effects the copy brings are found and changed like those of an item that exists, each checked by its plan.
   const plans = await planEffects(built, effects, `${where}.effects`);
   refuseChangedAndRemoved(plans, [...dropped], `${where}.removeEffects`, "effect");
@@ -264,9 +242,6 @@ async function planItemCreation(actor, entry, source, where) {
     }),
     ...plans.flatMap((plan) => (plan.document ? [] : [plan.data]))
   ];
-  const wanted = pickData(built._source, asked);
-  checkKeptAsGiven(asked, wanted, at);
-  await checkImage(wanted.img, at);
   return {
     where,
     key: `${type} ${built.name}`,
@@ -275,7 +250,7 @@ async function planItemCreation(actor, entry, source, where) {
     id: null,
     name: built.name,
     type,
-    write: writeOf(kind, wanted, removed, type),
+    write,
     effects: plans,
     removal: removeEffects ? { ids: [], dropped: copied.length - kept.length } : null
   };
@@ -436,7 +411,7 @@ function stepsOf(actor, plan, state) {
 
 function effectOutcome(plan, parent, state) {
   const effect = parent.effects.get(plan.id);
-  if (!effect) return { id: plan.id, name: plan.name, created: false, error: NOT_CREATED };
+  if (!effect) return { id: plan.id, name: plan.name, created: false, error: NOT_CREATED_HERE };
   return {
     id: effect.id,
     name: effect.name,
@@ -453,7 +428,7 @@ function itemOutcome(plan, actor, state) {
     : actor.items.find(
         (one) => !state.known.has(one.id) && !isSpellCopy(one) && one.name === plan.name && one.type === plan.type
       );
-  if (!item) return { name: plan.name, type: plan.type, created: false, error: NOT_CREATED };
+  if (!item) return { name: plan.name, type: plan.type, created: false, error: NOT_CREATED_HERE };
   return {
     id: item.id,
     name: item.name,
@@ -517,7 +492,7 @@ export async function writeEmbedded(actor, plan) {
     } catch (error) {
       throw new MethodError(
         "foundry_error",
-        `Foundry failed while ${what} of ${actor.name} (${error.message}). ${describeWritten(outcomeOf(actor, plan, state))} Running the call again writes what still differs.`
+        `Foundry failed while ${what} of ${actor.name} (${error.message}). ${describeWritten(outcomeOf(actor, plan, state))} ${RUN_AGAIN}`
       );
     }
   }

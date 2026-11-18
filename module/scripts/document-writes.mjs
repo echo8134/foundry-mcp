@@ -2,7 +2,7 @@
 // writes the plan. A plan is made once before the call waits for its turn, to refuse a bad request at once, and again
 // when its turn comes: a write queued before it may have changed what the plan was made on.
 
-import { diffData, isPlainObject, pickData, putAt, updateFor, writeOutcome } from "./data-diff.mjs";
+import { diffData, isPlainObject, putAt, updateFor, writeOutcome } from "./data-diff.mjs";
 import {
   classOf,
   findDocument,
@@ -21,22 +21,18 @@ import { MethodError } from "./errors.mjs";
 import { documentsWithin } from "./field-check.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
+  changedInStorage,
   checkAsked,
-  checkImage,
-  checkKeptAsGiven,
-  checkRemoval,
   forWrite,
   kindOf,
-  modelRefusal,
+  NOT_CREATED,
+  planBuilt,
+  planUpdate,
+  RUN_AGAIN,
   refuse,
   walkOf,
-  wantedChanges,
-  withoutOwnFlags,
-  writeOf
+  withoutOwnFlags
 } from "./write-checks.mjs";
-
-const NOT_CREATED =
-  "foundry_error: Foundry created nothing for this entry and reported no error, which is what it does when the system or a module refuses a creation.";
 
 function refuseUnwritten(documentName, where = "") {
   const { unwritten } = rulesOf(documentName);
@@ -108,22 +104,10 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const type = typeOfNew(cls, asked, where);
   refuseRuled(rulesOf(name).create?.(asked), where);
   refuseRuledWithin(cls, asked, walkOf(type, true), where);
-  checkAsked(kind, asked, [], type, where, true);
+  checkAsked(kind, asked, { type, where, embedded: true });
   const data = asBridgeMade(asked, cls);
-  let built;
-  try {
-    // Built with its parent and pack, as Foundry builds a document before it creates it
-    // (client/data/client-backend.mjs:91-94). The constructor keeps the object it is given and cleans it in place.
-    built = new cls(structuredClone(data), { parent, pack: pack?.collection ?? null });
-  } catch (error) {
-    throw modelRefusal(kind, error, where);
-  }
-  const shape = byPosition(asked, cls);
-  const wanted = pickData(byPosition(built.toObject(), cls), shape);
-  checkKeptAsGiven(shape, wanted, where);
-  await checkImage(wanted.img, where);
-  const write = writeOf(kind, wanted, [], type, asked, true);
-  return { data, write: { ...write, unseen: secretsGiven(name, wanted) } };
+  const { write } = await planBuilt(kind, cls, data, asked, { parent, pack: pack?.collection ?? null, where });
+  return { data, write: { ...write, unseen: secretsGiven(name, write.wanted) } };
 }
 
 async function planCreations(request) {
@@ -209,16 +193,11 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   const { _id: _same, ...rest } = given;
   const asked = withoutOwnFlags(kind, rest, document._source);
   refuseRuled(rulesOf(name).update?.(document, asked, remove), where);
-  checkAsked(kind, asked, remove, document.type, where);
-  const wanted = wantedChanges(kind, document, asked, where);
-  checkKeptAsGiven(asked, wanted, where);
-  if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
-  checkRemoval(kind, document, remove, where);
-  const write = writeOf(kind, wanted, remove, document.type);
+  const write = await planUpdate(kind, document, asked, { remove, where });
   // Asked of what the update writes: a field given as it is stored is no part of it.
-  const { changes } = diffData(wanted, document._source, write.same);
+  const { changes } = diffData(write.wanted, document._source, write.same);
   refuseRuledWithin(cls, changes, walkOf(document.type), where);
-  return { document, write: { ...write, unseen: secretsGiven(name, wanted) } };
+  return { document, write: { ...write, unseen: secretsGiven(name, write.wanted) } };
 }
 
 async function planChanges({ documents: entries }) {
@@ -257,9 +236,7 @@ function describeWritten(plans, before, stored) {
     const all = [...changed, ...unknown];
     return all.length > 0 ? [`${document.uuid} (${all.join(", ")})`] : [];
   });
-  return written.length > 0
-    ? `Changed in the stored data: ${written.join("; ")}.`
-    : "Nothing was changed in the stored data.";
+  return changedInStorage(written);
 }
 
 export async function updateDocuments(request) {
@@ -276,7 +253,7 @@ export async function updateDocuments(request) {
     } catch (error) {
       throw new MethodError(
         "foundry_error",
-        `documents[${index}]: Foundry failed while updating ${document.uuid} (${error.message}). ${describeWritten(plans, before, stored)} Running the call again writes what still differs.`
+        `documents[${index}]: Foundry failed while updating ${document.uuid} (${error.message}). ${describeWritten(plans, before, stored)} ${RUN_AGAIN}`
       );
     }
     documents.push({ uuid: document.uuid, ...writeOutcome(write, before[index], document._source, stored[index]) });
