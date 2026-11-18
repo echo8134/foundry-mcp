@@ -119,13 +119,14 @@ type Env = {
   makeToken: (data: Record<string, any>, scene: any, id: string | null) => any;
   viewedScene: () => any;
   userId: string;
+  /** The documents of a compendium pack, which the world keeps for every document type. */
+  packDocuments: (pack: string, documentName: string) => Collection<any>;
 };
 
 export function fakeActors(env: Env) {
   const { system, folders, log, control, delay } = env;
   const actors = new Collection<any>();
   const items = new Collection<any>();
-  const packs = new Map<string, Collection<any>>();
   const kinds: Record<Kind["name"], Kind> = {
     Actor: {
       name: "Actor",
@@ -296,7 +297,8 @@ export function fakeActors(env: Env) {
       get flags() {
         return read().flags ?? {};
       },
-      toObject: () => structuredClone(read())
+      toObject: () => structuredClone(read()),
+      getEmbeddedCollection: () => item.effects
     };
     const collection = liveCollection(effects, (id) => effectDocument(recordOf(effects, id), item));
     Object.defineProperty(item, "effects", { get: collection });
@@ -544,6 +546,7 @@ export function fakeActors(env: Env) {
       },
       /** The stored data with the embedded documents in it, as Document#toObject gives it. */
       toObject: () => ({ ...structuredClone(source), _id: id }),
+      getEmbeddedCollection: (name: string) => (name === "Item" ? actor.items : actor.effects),
       getDependentTokens({ concreteOnly = false }: { concreteOnly?: boolean } = {}) {
         return [...(dependentTokens.get(id ?? "") ?? [])].filter((token) => !concreteOnly || inItsScene(token));
       },
@@ -709,6 +712,7 @@ export function fakeActors(env: Env) {
         return actor._source.flags;
       },
       toObject: () => structuredClone(actor._source),
+      getEmbeddedCollection: (name: string) => (name === "Item" ? actor.items : actor.effects),
       getDependentTokens: ({ concreteOnly = false }: { concreteOnly?: boolean } = {}) =>
         !concreteOnly || inItsScene(token) ? [token] : []
     };
@@ -737,8 +741,10 @@ export function fakeActors(env: Env) {
   }
 
   class FakeItem {
+    static documentName = "Item";
     static schema = kinds.Item.schema;
     static metadata = system.Item.documentClass.metadata;
+    static hierarchy = { effects: kinds.Item.schema.fields.effects };
     constructor(data: Source, context: { parent?: any } = {}) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake item is a plain object.
       return unsaved(kinds.Item, data, context.parent ?? null);
@@ -746,8 +752,10 @@ export function fakeActors(env: Env) {
   }
 
   class FakeEffect {
+    static documentName = "ActiveEffect";
     static schema = kinds.ActiveEffect.schema;
     static metadata = system.ActiveEffect.documentClass.metadata;
+    static hierarchy = {};
     constructor(data: Source, context: { parent?: any } = {}) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake effect is a plain object.
       return unsaved(kinds.ActiveEffect, data, context.parent ?? null);
@@ -760,8 +768,10 @@ export function fakeActors(env: Env) {
    * deletion of an actor a preDelete hook refuses.
    */
   class FakeActor {
+    static documentName = "Actor";
     static schema = kinds.Actor.schema;
     static metadata = system.Actor.documentClass.metadata;
+    static hierarchy = { items: kinds.Actor.schema.fields.items, effects: kinds.Actor.schema.fields.effects };
     constructor(data: Source) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake actor is a plain object that builtActor builds.
       return builtActor(data, null);
@@ -828,8 +838,7 @@ export function fakeActors(env: Env) {
   }
 
   const inPack = (pack: string, document: any) => {
-    if (!packs.has(pack)) packs.set(pack, new Collection<any>());
-    packs.get(pack)!.set(document.id, document);
+    env.packDocuments(pack, document.documentName).set(document.id, document);
     return document;
   };
 
@@ -842,15 +851,10 @@ export function fakeActors(env: Env) {
   }
 
   /**
-   * The UUIDs of world and compendium actors and items, resolved as foundry.utils.fromUuid does for them
+   * The UUIDs of world actors and items, resolved as foundry.utils.fromUuid does for them
    * (client/utils/helpers.mjs:172): null when nothing is there, undefined for a UUID of another kind.
    */
   function resolve(parts: string[]) {
-    if (parts[0] === "Compendium") {
-      const [, scope, name, type, id] = parts;
-      const document = packs.get(`${scope}.${name}`)?.get(id!);
-      return document?.documentName === type ? within(document, parts.slice(5)) : null;
-    }
     if (parts[0] === "Actor") return within(actors.get(parts[1]!), parts.slice(2));
     if (parts[0] === "Item") return items.get(parts[1]!) ?? null;
     return undefined;

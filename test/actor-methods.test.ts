@@ -392,14 +392,53 @@ describe("get_schema", () => {
       viaTool("get_schema", { document: "Actor", path: "system" }),
       refused("invalid_params", /Pass type to get a field tree/)
     );
-    assert.throws(() => TOOLS.get_schema.input.parse({ document: "Scene" }));
+    assert.throws(() => TOOLS.get_schema.input.parse({ document: "Spell" }));
   });
 
   it("refuses a document the module does not know, also one that names an inherited property", async () => {
     const direct = (METHODS as unknown as Record<string, (params: any) => Promise<any>>).get_schema!;
     await assert.rejects(
       direct({ document: "constructor" }),
-      refused("invalid_params", /"constructor".*Actor, Item, ActiveEffect, Token, Activity, Advancement, Config/)
+      refused(
+        "invalid_params",
+        /"constructor".*ActiveEffect, Actor, .*Item, JournalEntry, .*Token, .*Activity, Advancement, Config\.$/
+      )
+    );
+  });
+
+  it("answers for every document type the running Foundry has a class for, with types where the type has them", async () => {
+    assert.deepEqual((await viaTool("get_schema", { document: "JournalEntryPage" })).types, ["text", "image", "rule"]);
+    assert.deepEqual((await viaTool("get_schema", { document: "Macro" })).types, ["chat", "script"]);
+    const entry = await viaTool("get_schema", { document: "JournalEntry" });
+    assert.deepEqual(
+      [entry.fields.name, entry.fields.pages, entry.fields.categories, entry.fields.folder],
+      [
+        "string",
+        "collection of JournalEntryPage",
+        "collection of JournalEntryCategory",
+        "id of Folder, nullable, default null"
+      ]
+    );
+    const text = await viaTool("get_schema", { document: "JournalEntryPage", type: "text" });
+    assert.deepEqual([text.fields.text.content, text.fields.system], ["html", "system data of the document type"]);
+    const rule = await viaTool("get_schema", { document: "JournalEntryPage", type: "rule", path: "system" });
+    assert.deepEqual(rule.fields, { tooltip: 'html, default ""' });
+    const user = await viaTool("get_schema", { document: "User", path: "role" });
+    assert.equal(user.fields, "integer, one of 0|1|2|3|4, default 1");
+    await assert.rejects(
+      viaTool("get_schema", { document: "JournalEntry", type: "text" }),
+      refused("invalid_params", /JournalEntry has no types\. Leave type out\./)
+    );
+    await assert.rejects(
+      viaTool("get_schema", { document: "JournalEntryPage", type: "scroll" }),
+      refused("invalid_params", /"scroll".*text, image, rule/)
+    );
+  });
+
+  it("refuses a document type the running Foundry has no class for, naming the ones it has", async () => {
+    await assert.rejects(
+      viaTool("get_schema", { document: "RollTable" }),
+      refused("invalid_params", /Unknown document "RollTable"\. Use one of: .*JournalEntry/)
     );
   });
 

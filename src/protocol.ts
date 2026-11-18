@@ -21,7 +21,9 @@ export const METHODS = [
   "update_tokens",
   "delete_tokens",
   "ensure_actor",
-  "delete_actors"
+  "delete_actors",
+  "list_documents",
+  "get_document"
 ] as const;
 export type Method = (typeof METHODS)[number];
 

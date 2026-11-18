@@ -18,7 +18,7 @@ describe("method list", () => {
     assert.deepEqual(
       { surface: SURFACE, methods: [...PROTOCOL_METHODS].sort() },
       {
-        surface: 5,
+        surface: 6,
         methods: [
           "create_walls",
           "delete_actors",
@@ -27,10 +27,12 @@ describe("method list", () => {
           "ensure_actor",
           "ensure_scene",
           "get_actor",
+          "get_document",
           "get_scene",
           "get_scene_image",
           "get_schema",
           "list_actors",
+          "list_documents",
           "list_scenes",
           "place_tokens",
           "sync_lights",

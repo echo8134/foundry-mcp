@@ -1,5 +1,6 @@
-import { getActor, getSchema, listActors } from "./actor-methods.mjs";
+import { getActor, listActors } from "./actor-methods.mjs";
 import { deleteActors, ensureActor, prepareActorDeletion, prepareEnsureActor } from "./actor-writes.mjs";
+import { getDocument, listDocuments } from "./document-methods.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
@@ -13,6 +14,7 @@ import {
   unknownSceneFields
 } from "./scene-data.mjs";
 import { drawLights, drawTokens, drawWalls } from "./scene-drawing.mjs";
+import { getSchema } from "./schema-methods.mjs";
 import { FLAG_SCOPE, isManaged, replacedBySync, sameLevelSet } from "./scope.mjs";
 import { storedTokenData, tokenFields } from "./token-data.mjs";
 import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
@@ -509,5 +511,7 @@ export const METHODS = Object.freeze({
   update_tokens: serialised("update_tokens", prepareUpdate, updateTokens),
   delete_tokens: serialised("delete_tokens", onScene(), deleteTokens),
   ensure_actor: serialised("ensure_actor", prepareEnsureActor, ensureActor),
-  delete_actors: serialised("delete_actors", prepareActorDeletion, deleteActors)
+  delete_actors: serialised("delete_actors", prepareActorDeletion, deleteActors),
+  list_documents: listDocuments,
+  get_document: getDocument
 });

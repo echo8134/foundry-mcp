@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { DOCUMENT_TYPES, SCHEMA_EXTRAS } from "../module/scripts/document-types.mjs";
 import { DOOR_KINDS, DOOR_STATE_NAMES, WALL_KIND_NAMES } from "../module/scripts/wall-kinds.mjs";
 import pkg from "../package.json" with { type: "json" };
 import { BridgeError } from "./hub.ts";
@@ -269,6 +270,8 @@ const itemEntrySchema = z
       entry.id !== undefined || entry.from !== undefined || (entry.name !== undefined && entry.type !== undefined),
     { message: "Give id, or name and type, or from." }
   );
+
+const documentType = z.enum(DOCUMENT_TYPES);
 
 const imageResultSchema = z.object({
   mimeType: z.string(),
@@ -582,15 +585,18 @@ const SPECS: Record<Method, ToolSpec> = {
   }),
   get_schema: defineTool({
     description:
-      "The stored field names of the installed dnd5e, read from its data models. Without type it lists the types of " +
-      "the document (Token has none); with type it returns the field tree, system included. A leaf is a string: the " +
+      "The stored field names of any document type, read from the data models of the running Foundry and the " +
+      "installed dnd5e. document is a Foundry document type (Actor, Item, JournalEntry, JournalEntryPage, RollTable, " +
+      "Macro and every other type list_documents takes), or Activity, Advancement or Config. Without type it lists the " +
+      "types of the document; with type it returns the field tree, system included. A document without types, such as " +
+      "Token, JournalEntry or User, returns its field tree at once and takes no type. A leaf is a string: the " +
       'kind, then constraints and the default, for example "integer, min 0, default 10". {$array: x}, {$set: x} and ' +
       "{$map: x, $keys} hold elements x, and a collection of documents is named, not expanded: read its entries as " +
       "the document it names (an item's activities as Activity, its advancement as Advancement). Config lists the dnd5e " +
       "key tables; with type it returns the legal keys of that table with their labels (toolIds gives each tool's item " +
       "UUID instead). path picks a subtree of a field tree, for example system.attributes.",
     input: z.object({
-      document: z.enum(["Actor", "Item", "ActiveEffect", "Token", "Activity", "Advancement", "Config"]),
+      document: z.enum([...DOCUMENT_TYPES, ...SCHEMA_EXTRAS]),
       type: nonBlank.optional().describe("A type of the document, or a Config table name."),
       path: nonBlank.optional().describe("Dot path into the field tree, for example system.abilities.")
     })
@@ -756,6 +762,64 @@ const SPECS: Record<Method, ToolSpec> = {
     input: z.strictObject({
       ids: z.array(z.string().min(1)).min(1).describe("World actor ids to delete."),
       handMade: z.literal(true).optional().describe("Also delete actors this bridge did not make.")
+    })
+  }),
+  list_documents: defineTool({
+    description:
+      "List the documents of one Foundry document type. It works for every type: JournalEntry, Item, RollTable, " +
+      "Macro, Playlist, Cards, ChatMessage, Combat, Folder, User, Setting and the rest, with whatever the system or a " +
+      "module stores in them. Without parent and pack it lists the documents of the world. parent, the UUID of a " +
+      "document, lists that document's embedded documents of the type: the JournalEntryPage of a JournalEntry, the " +
+      "PlaylistSound of a Playlist, the TableResult of a RollTable, the Combatant of a Combat, the Item or " +
+      "ActiveEffect of an Actor, the Wall or Token of a Scene. pack, a compendium pack id such as dnd5e.monsters, " +
+      "lists that pack from its index and loads none of its documents. A type that exists only inside another " +
+      "document needs parent, an Adventure needs pack, and a combination that leads nowhere is refused with what to " +
+      "pass instead. Each document is {uuid, id, name (where the type has names), type (its subtype where the type " +
+      "has subtypes, such as text for a journal page or npc for an actor), folder (path of folder names, in a " +
+      "listing of the world or of a pack, for a type that folders hold), managed (true when this bridge made it)}. " +
+      "Narrow by folder (that folder and everything under it), name (part of the name, any case) and subtype. Sorted " +
+      "by folder path, then name. Chat messages are sorted by time, oldest first. At most 200 documents come back: " +
+      "total says how many matched and truncated whether the list was cut, and of chat messages the newest 200 are " +
+      "kept. For a type that folders hold the result also has folders [{id, path}], where id is what a document's " +
+      "stored folder field takes. For a type that compendium packs hold it has packs [{id, title, locked}]: the packs " +
+      "of that type in this world, whose id is what pack takes. get_document reads one document in full by its uuid. " +
+      "list_actors and list_scenes say more about actors and scenes.",
+    input: z.strictObject({
+      type: documentType.describe("The document type, for example JournalEntry."),
+      parent: nonBlank
+        .optional()
+        .describe("UUID of the document whose embedded documents to list, for example JournalEntry.<id>."),
+      pack: nonBlank
+        .optional()
+        .describe("Compendium pack id, for example dnd5e.monsters, as packs of an earlier listing names it."),
+      folder: folderPath.optional().describe('Folder path from the root, for example ["Lore", "Gods"].'),
+      name: nonBlank.optional().describe("Part of the name, any case."),
+      subtype: nonBlank
+        .optional()
+        .describe("A subtype of the document type, for example text for a JournalEntryPage. get_schema lists them.")
+    })
+  }),
+  get_document: defineTool({
+    description:
+      "Read one document of any type by its UUID, as list_documents returns it. A compendium document is loaded for " +
+      "this. Returns {uuid, documentName, id, name and type (where the document has them), parent (the UUID of the " +
+      "document it is embedded in, or null), pack (the id of its compendium pack, or null) and for a pack document " +
+      "locked, folder (path of folder names, for a type that folders hold), managed (true when this bridge made it), " +
+      "data, embedded}. data is the document's stored data, with the field names and codes Foundry and the system " +
+      "store (get_schema lists them), in the shape update_documents takes: change a value and pass data back, and " +
+      "what was not changed writes nothing. data leaves out the embedded documents, and a stored key that " +
+      "update_documents would refuse. embedded lists the embedded documents by their document type, each {uuid, id, " +
+      "name, type}, to read with this tool by its uuid: the pages of a journal entry under JournalEntryPage, the " +
+      "sounds of a playlist under PlaylistSound, the results of a table under TableResult, the items and effects of " +
+      "an actor under Item and ActiveEffect. At most 200 of each are listed. embeddedTotals names the types that have " +
+      "more, with how many: list_documents with this uuid as parent narrows them by name. A user's password and " +
+      "passwordSalt are never returned. A world Setting can be read here, and its value is whatever the system or a " +
+      "module stored, which can include an access key of a service. get_actor and get_scene say more about an actor " +
+      "and a scene: derived numbers, placed tokens, and walls and lights in map coordinates.",
+    input: z.strictObject({
+      uuid: nonBlank.describe(
+        "The document's UUID, for example JournalEntry.<id>, JournalEntry.<id>.JournalEntryPage.<id> or Compendium.<pack>.Item.<id>."
+      )
     })
   })
 };

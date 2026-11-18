@@ -28,7 +28,7 @@ async function connect(answer: (call: Call) => unknown | Promise<unknown>) {
 const text = (result: unknown) => (result as { content: { text: string }[] }).content[0]!.text;
 
 describe("MCP tools", () => {
-  it("lists exactly the sixteen tools with model-facing descriptions", async () => {
+  it("lists exactly its tools with model-facing descriptions", async () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
@@ -39,10 +39,12 @@ describe("MCP tools", () => {
       "ensure_actor",
       "ensure_scene",
       "get_actor",
+      "get_document",
       "get_scene",
       "get_scene_image",
       "get_schema",
       "list_actors",
+      "list_documents",
       "list_scenes",
       "place_tokens",
       "sync_lights",
@@ -1085,5 +1087,112 @@ describe("MCP tools", () => {
     const { client } = await connect(() => ({ nonsense: true }));
     const result = await client.callTool({ name: "get_scene_image", arguments: {} });
     assert.equal(result.isError, true);
+  });
+});
+
+describe("MCP tools for reading any document", () => {
+  it("sends list_documents and get_document to the bridge as given, with the name and the folder names trimmed", async () => {
+    const { client, calls } = await connect(() => ({}));
+    const listing = {
+      type: "JournalEntryPage",
+      parent: "JournalEntry.abc",
+      name: " gods ",
+      subtype: "text"
+    };
+    const inPack = { type: "Item", pack: "dnd5e.items", folder: [" Weapons ", "Swords"] };
+    for (const args of [listing, inPack]) {
+      assert.notEqual((await client.callTool({ name: "list_documents", arguments: args })).isError, true);
+    }
+    await client.callTool({ name: "get_document", arguments: { uuid: " Compendium.dnd5e.items.Item.abc " } });
+    assert.deepEqual(
+      calls.map((call) => [call.method, call.params, call.timeoutMs]),
+      [
+        ["list_documents", { ...listing, name: "gods" }, 30_000],
+        ["list_documents", { ...inPack, folder: ["Weapons", "Swords"] }, 30_000],
+        ["get_document", { uuid: "Compendium.dnd5e.items.Item.abc" }, 30_000]
+      ]
+    );
+  });
+
+  it("takes every document type of Foundry for list_documents, and for get_schema also Activity, Advancement and Config", () => {
+    for (const type of [
+      "ActiveEffect",
+      "Adventure",
+      "Cards",
+      "ChatMessage",
+      "Combat",
+      "Folder",
+      "RollTable",
+      "Setting",
+      "User",
+      "Wall"
+    ]) {
+      assert.equal(TOOLS.list_documents.input.safeParse({ type }).success, true, type);
+      assert.equal(TOOLS.get_schema.input.safeParse({ document: type }).success, true, type);
+    }
+    for (const document of ["Activity", "Advancement", "Config"]) {
+      assert.equal(TOOLS.get_schema.input.safeParse({ document }).success, true, document);
+      assert.equal(TOOLS.list_documents.input.safeParse({ type: document }).success, false, document);
+    }
+  });
+
+  for (const [label, name, args, message] of [
+    ["list_documents without a type", "list_documents", {}, /at type$/],
+    [
+      "list_documents with a type Foundry does not have",
+      "list_documents",
+      { type: "Spell" },
+      /Invalid option.* at type$/
+    ],
+    ["list_documents with a blank parent", "list_documents", { type: "Item", parent: " " }, /at parent$/],
+    [
+      "list_documents with an input it does not have",
+      "list_documents",
+      { type: "Item", actor: "a1" },
+      /Unrecognized key: "actor"/
+    ],
+    ["get_document without a uuid", "get_document", {}, /at uuid$/],
+    ["get_document with a blank uuid", "get_document", { uuid: "  " }, /at uuid$/],
+    ["get_schema for a document Foundry does not have", "get_schema", { document: "Spell" }, /at document$/]
+  ] as const) {
+    it(`refuses ${label} before any request is sent`, async () => {
+      const { client, calls } = await connect(() => ({}));
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+      assert.match(text(result), message);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  it("tells a caller where list_documents reads, what each entry holds and where the list ends", async () => {
+    const listing = TOOLS.list_documents.description;
+    for (const said of [
+      /Without parent and pack it lists the documents of the world/,
+      /parent, the UUID of a document, lists that document's embedded documents of the type/,
+      /lists that pack from its index and loads none of its documents/,
+      /a combination that leads nowhere is refused with what to pass instead/,
+      /managed \(true when this bridge made it\)/,
+      /At most 200 documents come back: total says how many matched and truncated whether the list was cut/,
+      /of chat messages the newest 200 are kept/,
+      /packs \[\{id, title, locked\}\]/
+    ]) {
+      assert.match(listing, said);
+    }
+  });
+
+  it("tells a caller what get_document returns, that data goes back to update_documents, and what it never returns", async () => {
+    const reading = TOOLS.get_document.description;
+    for (const said of [
+      /in the shape update_documents takes: change a value and pass data back, and what was not changed writes nothing/,
+      /data leaves out the embedded documents/,
+      /embedded lists the embedded documents by their document type, each \{uuid, id, name, type\}/,
+      /embeddedTotals names the types that have more/,
+      /A user's password and passwordSalt are never returned/,
+      /its value is whatever the system or a module stored, which can include an access key of a service/
+    ]) {
+      assert.match(reading, said);
+    }
+    assert.match(TOOLS.get_schema.description, /The stored field names of any document type/);
+    assert.match(TOOLS.get_schema.description, /A document without types, such as Token, JournalEntry or User/);
   });
 });

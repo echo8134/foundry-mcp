@@ -3,7 +3,6 @@ import { dropAt } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
-import { CONFIG_TABLES, configKeys, describeField, selectPath } from "./schema.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import { folderRecords, takenBack } from "./world.mjs";
 
@@ -135,74 +134,4 @@ export async function getActor({ actor: ref, items = [], effects = [] }) {
           name: token.name
         }))
   };
-}
-
-const typedDocument = (documentName) => ({
-  types: () => systemTypes(documentName),
-  schema: () => CONFIG[documentName].documentClass.schema,
-  system: (type) => CONFIG[documentName].dataModels?.[type]?.schema
-});
-
-/** dnd5e keeps activities and advancements inside an item, each type with a class of its own (dnd5e module/config.mjs). */
-const pseudoDocument = (table) => ({
-  types: () => Object.keys(CONFIG.DND5E[table]),
-  schema: (type) => CONFIG.DND5E[table][type].documentClass.schema
-});
-
-/** Where get_schema finds each document's types and field schema. `types: null` means the document has no types. */
-const SCHEMA_SOURCES = Object.freeze({
-  Actor: typedDocument("Actor"),
-  Item: typedDocument("Item"),
-  ActiveEffect: typedDocument("ActiveEffect"),
-  Token: { types: null, schema: () => CONFIG.Token.documentClass.schema },
-  Activity: pseudoDocument("activityTypes"),
-  Advancement: pseudoDocument("advancementTypes")
-});
-
-function noPathWithout(path, what, instead = "Leave path out.") {
-  if (path !== undefined) {
-    throw new MethodError("invalid_params", `path selects inside a field tree, and ${what} has none. ${instead}`);
-  }
-}
-
-function configSchema(type, path) {
-  if (type === undefined) {
-    noPathWithout(path, "a list of tables");
-    return { types: [...CONFIG_TABLES] };
-  }
-  checkType(CONFIG_TABLES, type, "Config table");
-  noPathWithout(path, "a Config table");
-  const table = CONFIG.DND5E[type];
-  if (table === null || typeof table !== "object") {
-    throw new MethodError("foundry_error", `The dnd5e system has no CONFIG.DND5E.${type} table.`);
-  }
-  return { keys: configKeys(table) };
-}
-
-export async function getSchema({ document, type, path }) {
-  if (document === "Config") return configSchema(type, path);
-  if (!Object.hasOwn(SCHEMA_SOURCES, document)) {
-    throw new MethodError(
-      "invalid_params",
-      `Unknown document "${document}". Use one of: ${Object.keys(SCHEMA_SOURCES).join(", ")}, Config.`
-    );
-  }
-  const source = SCHEMA_SOURCES[document];
-  if (source.types === null) {
-    if (type !== undefined) throw new MethodError("invalid_params", `${document} has no types. Leave type out.`);
-  } else if (type === undefined) {
-    noPathWithout(path, "a list of types", "Pass type to get a field tree, or leave path out.");
-    return { types: source.types() };
-  } else {
-    checkType(source.types(), type, `${document} type`);
-  }
-  const tree = describeField(source.schema(type));
-  const system = source.system?.(type);
-  if (system) tree.system = describeField(system);
-  if (path === undefined) return { fields: tree };
-  const fields = selectPath(tree, path);
-  if (fields === undefined) {
-    throw new MethodError("not_found", `No field at path ${path} in ${type ? `the ${type} ` : ""}${document}.`);
-  }
-  return { fields };
 }

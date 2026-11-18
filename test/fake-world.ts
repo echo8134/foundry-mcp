@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Collection, type EmbeddedWrite, fakeActors } from "./fake-actors.ts";
+import { type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
 import { fakeDocument } from "./fake-dom.ts";
 import { applyChanges, cleanValue, cloneChanges, ForcedDeletion, merge, validationErrors } from "./fake-model.ts";
 import { systemConfig } from "./fake-system.ts";
@@ -59,6 +60,51 @@ const cleanInteger = (value: number) => {
 
 const USER_ID = "user1";
 
+/** Which document types a world, a compendium pack and a folder hold (common/constants.mjs:411-442, :542-543). */
+const DOCUMENT_PLACES = Object.freeze({
+  WORLD_DOCUMENT_TYPES: [
+    "Actor",
+    "Cards",
+    "ChatMessage",
+    "Combat",
+    "FogExploration",
+    "Folder",
+    "Item",
+    "JournalEntry",
+    "Macro",
+    "Playlist",
+    "RollTable",
+    "Scene",
+    "Setting",
+    "User"
+  ],
+  COMPENDIUM_DOCUMENT_TYPES: [
+    "ActiveEffect",
+    "Actor",
+    "Adventure",
+    "Cards",
+    "Item",
+    "JournalEntry",
+    "Macro",
+    "Playlist",
+    "RollTable",
+    "Scene"
+  ],
+  FOLDER_DOCUMENT_TYPES: [
+    "ActiveEffect",
+    "Actor",
+    "Adventure",
+    "Item",
+    "Scene",
+    "JournalEntry",
+    "Playlist",
+    "RollTable",
+    "Cards",
+    "Macro",
+    "Compendium"
+  ]
+});
+
 const DOCUMENT_TYPES = Object.freeze({
   Actor: ["base", "character", "npc", "vehicle", "group"],
   Item: ["base", "weapon", "feat", "spell", "class"],
@@ -96,7 +142,11 @@ export function fakeWorld(options: WorldOptions = {}) {
     actorUpdates: [] as { id: string; changes: Record<string, any> }[],
     actorDeletes: [] as string[][],
     /** Every create, update and deletion of items and effects, on an actor or on an item. */
-    embedded: [] as EmbeddedWrite[]
+    embedded: [] as EmbeddedWrite[],
+    /** Every create, update and deletion the generic document classes saw. */
+    documentWrites: [] as DocumentWrite[],
+    packIndexes: [] as { pack: string; fields: string[] }[],
+    packLoads: [] as string[]
   };
   const control = {
     thumbnailFails: options.thumbnailFails ?? false,
@@ -135,7 +185,22 @@ export function fakeWorld(options: WorldOptions = {}) {
     /** Stands in for a preUpdate hook that changes or drops part of an update of an item or effect. */
     filterEmbeddedChanges: null as null | ((document: string, changes: Record<string, any>) => void),
     /** The message of an error a write of items or effects throws once it has stored what it was given. */
-    embeddedError: null as null | ((action: string, document: string) => string | undefined)
+    embeddedError: null as null | ((action: string, document: string) => string | undefined),
+    /** Stands in for a preCreate hook that refuses a document of the generic classes. */
+    vetoDocument: null as null | ((document: string, data: Record<string, any>) => boolean),
+    /** Stands in for a hook or a system rule that changes the data of a new document before it is stored. */
+    filterDocumentData: null as null | ((document: string, source: Record<string, any>) => void),
+    /** Stands in for a preUpdate hook that refuses the update of a document. */
+    vetoDocumentUpdate: null as null | ((document: string, changes: Record<string, any>) => boolean),
+    /** Stands in for a preUpdate hook that changes or drops part of an update. */
+    filterDocumentChanges: null as null | ((document: string, changes: Record<string, any>) => void),
+    /** Stands in for a preDelete hook that refuses the deletion of a document. */
+    vetoDocumentDelete: null as null | ((document: any) => boolean),
+    /**
+     * The message of an error a write of the generic classes throws: a create before anything is stored, an update
+     * and a deletion once they have stored what they were given.
+     */
+    documentError: null as null | ((action: string, document: string, data?: Record<string, any>) => string | undefined)
   };
   const delay = () => pause(options.latency ?? 0);
   const system = systemConfig();
@@ -224,6 +289,7 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   const globals = globalThis as Record<string, any>;
+  const documents = fakeDocuments({ folders, log, control, delay, nextNumber: () => ++counter });
   let makeTokenLater: (data: Record<string, any>, scene: any, id: string | null) => any;
   const {
     actors,
@@ -248,7 +314,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     nextNumber: () => ++counter,
     makeToken: (data, scene, id) => makeTokenLater(data, scene, id),
     viewedScene: () => globals.canvas.scene,
-    userId: USER_ID
+    userId: USER_ID,
+    packDocuments: (pack, documentName) => documents.packOf(pack, documentName).documents
   });
 
   /** What Foundry stores of the data a token is built from, or the error its token model throws on it. */
@@ -662,6 +729,8 @@ export function fakeWorld(options: WorldOptions = {}) {
    * (client/documents/scene.mjs:443), so a type that is not a number does that here.
    */
   class FakeScene {
+    /** The documents a scene embeds, as far as the fake has them (common/documents/scene.mjs:32-42). */
+    static metadata = { embedded: { AmbientLight: "lights", Level: "levels", Token: "tokens", Wall: "walls" } };
     readonly dimensions: ReturnType<typeof dimensionsOf> | undefined;
     readonly shiftX: number | null;
     readonly shiftY: number | null;
@@ -694,12 +763,14 @@ export function fakeWorld(options: WorldOptions = {}) {
       if (parts[4] !== "Actor") return token ? { ...token, documentName: "Token" } : null;
       return token?.actor?.id === parts[5] ? within(token.actor, parts.slice(6)) : null;
     }
-    return resolve(parts) ?? null;
+    return resolve(parts) ?? (await documents.resolve(parts)) ?? null;
   }
 
   /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
   class FakeToken {
     static schema = tokenFields;
+    /** A token embeds its own actor data (common/documents/token.mjs:40-42). */
+    static metadata = { embedded: { ActorDelta: "delta" } };
     static MOVEMENT_FIELDS = system.Token.documentClass.MOVEMENT_FIELDS;
     constructor(data: Record<string, any>, context: { parent: any }) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake token is a plain object that makeToken builds.
@@ -708,12 +779,33 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   const install = () => {
-    globals.game = { scenes, folders, actors, items, documentTypes: DOCUMENT_TYPES, user: { id: USER_ID } };
+    globals.game = {
+      scenes,
+      folders,
+      actors,
+      items,
+      documentTypes: { ...documents.documentTypes, ...DOCUMENT_TYPES },
+      user: { id: USER_ID },
+      packs: documents.packs,
+      // The world's collections by document name (client/game.mjs:905-929).
+      collections: new Map<string, Collection<any>>([
+        ...documents.worlds,
+        ["Actor", actors],
+        ["Item", items],
+        ["Scene", scenes]
+      ])
+    };
     globals.canvas = { scene: null };
-    globals.CONST = { FOLDER_MAX_DEPTH: 4 };
+    globals.CONST = { FOLDER_MAX_DEPTH: 4, ...DOCUMENT_PLACES };
     globals._del = new ForcedDeletion();
     globals.document = fakeDocument;
     globals.CONFIG = {
+      ...Object.fromEntries(
+        Object.entries(documents.classes).map(([name, documentClass]) => [
+          name,
+          { documentClass, dataModels: documents.dataModels[name] }
+        ])
+      ),
       Scene: { documentClass: FakeScene },
       ...system,
       Actor: { ...system.Actor, documentClass: FakeActor },
@@ -748,14 +840,7 @@ export function fakeWorld(options: WorldOptions = {}) {
           async create(data: any) {
             await delay();
             log.folderCreates++;
-            const folder = {
-              id: `folder${++counter}`,
-              name: data.name.trim(),
-              type: data.type,
-              folder: data.folder ? folders.get(data.folder) : null
-            };
-            folders.set(folder.id, folder);
-            return folder;
+            return documents.makeFolder({ name: data.name, type: data.type, folder: data.folder ?? null });
           }
         },
         Scene: FakeScene
@@ -763,11 +848,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     };
   };
 
-  const addFolder = (name: string, parent: any = null, type = "Scene") => {
-    const folder = { id: `folder${++counter}`, name, type, folder: parent };
-    folders.set(folder.id, folder);
-    return folder;
-  };
+  const addFolder = (name: string, parent: any = null, type = "Scene") =>
+    documents.makeFolder({ name, type, folder: parent?.id ?? null });
   const addScene = (data: Record<string, any>) => makeScene(data);
   const addWall = (scene: any, data: Record<string, any> = {}) => {
     const wall = makeWall({ c: [0, 0, 1, 1], ...data });
@@ -795,9 +877,13 @@ export function fakeWorld(options: WorldOptions = {}) {
     addItem,
     addPackItem,
     addToken,
+    addDocument: documents.addDocument,
+    addPack: documents.addPack,
+    addPackFolder: documents.addPackFolder,
     scenes,
     folders,
     actors,
+    packs: documents.packs,
     log,
     control
   };
