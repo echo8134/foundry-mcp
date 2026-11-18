@@ -1,12 +1,11 @@
 import { derivedValues } from "./actor-data.mjs";
 import { dropAt } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
-import { fieldProblems } from "./field-check.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { TYPED_ENTRY_SCHEMAS } from "./item-data.mjs";
 import { CONFIG_TABLES, configKeys, describeField, selectPath } from "./schema.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
-import { folderRecords, storedAgain } from "./world.mjs";
+import { folderRecords, takenBack } from "./world.mjs";
 
 const MAX_ACTORS = 200;
 
@@ -78,20 +77,6 @@ export async function resolveActor(ref) {
 export function actorFolderPath(actor) {
   if (actor.pack || actor.isToken) return [];
   return folderPath(folderRecords("Actor"), actor.folder?.id ?? null) ?? [];
-}
-
-/**
- * Stored data of an actor, an item or an effect that ensure_actor takes back as it is: without a key the model would
- * not store again, and without a key outside a map's fixed keys, which dnd5e stores and then ignores (one pack actor
- * has system.skills.value).
- */
-function takenBack(document, stored, schemaFor = {}) {
-  const data = storedAgain(document, stored);
-  const schema = CONFIG[document.documentName].documentClass.schema;
-  for (const { path, problem } of fieldProblems(schema, data, { type: document.type, schemaFor })) {
-    if (problem === "key") dropAt(data, path);
-  }
-  return data;
 }
 
 /**

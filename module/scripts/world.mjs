@@ -1,5 +1,6 @@
-import { pickData } from "./data-diff.mjs";
+import { dropAt, pickData } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
+import { fieldProblems } from "./field-check.mjs";
 import { resolveFolderPath } from "./folders.mjs";
 import { canonicalNodes, canonicalStyle } from "./html.mjs";
 
@@ -90,6 +91,24 @@ export function storedAgain(document, stored) {
 }
 
 /**
+ * Stored data of a document that a write tool takes back as it is: without a key the model would not store again, and
+ * without a key outside a map's fixed keys, which dnd5e stores and then ignores (one pack actor has
+ * system.skills.value).
+ * @param {{documentName: string, type?: string, validate: (options: object) => boolean}} document
+ * @param {Record<string, unknown>} stored the document's `_source`, or a part of it
+ * @param {Readonly<Record<string, import("./field-check.mjs").SchemaFor>>} [schemaFor] as fieldProblems takes it
+ * @returns {Record<string, unknown>}
+ */
+export function takenBack(document, stored, schemaFor = {}) {
+  const data = storedAgain(document, stored);
+  const schema = CONFIG[document.documentName].documentClass.schema;
+  for (const { path, problem } of fieldProblems(schema, data, { type: document.type, schemaFor })) {
+    if (problem === "key") dropAt(data, path);
+  }
+  return data;
+}
+
+/**
  * The content of an HTML text in a form that does not depend on how it is spelled. A template's content is parsed in
  * a document of its own, which runs no script and loads no image.
  * @param {string} html
@@ -106,10 +125,16 @@ export function canonicalHtml(html) {
   return JSON.stringify(canonicalNodes(template.content.childNodes, (style) => canonicalStyle(style, parse)));
 }
 
+/**
+ * @param {Iterable<{id: string, name: string, folder?: {id: string} | null}>} folders folder documents
+ * @returns {import("./folders.mjs").FolderRecord[]}
+ */
+export const foldersAsRecords = (folders) =>
+  Array.from(folders, (folder) => ({ id: folder.id, name: folder.name, parentId: folder.folder?.id ?? null }));
+
+/** The world's folders of one document type. A compendium pack has folders of its own. */
 export function folderRecords(type) {
-  return game.folders
-    .filter((folder) => folder.type === type)
-    .map((folder) => ({ id: folder.id, name: folder.name, parentId: folder.folder?.id ?? null }));
+  return foldersAsRecords(game.folders.filter((folder) => folder.type === type));
 }
 
 /**

@@ -1,5 +1,5 @@
-// The checks every write of an actor, an item or an active effect runs before anything is written, and the wording of
-// their refusals. `where` names the entry of the request a refusal is about, and is empty for the actor itself.
+// The checks every write of a document runs before anything is written, and the wording of their refusals. `where`
+// names the entry of the request a refusal is about, and is empty for the one document a call is about.
 
 import { explainRecasts, givesValueOn, hasPath, recastLeaves, updateFor } from "./data-diff.mjs";
 import { MethodError } from "./errors.mjs";
@@ -41,14 +41,36 @@ export const KINDS = Object.freeze({
 
 const schemaOf = (kind) => CONFIG[kind.document].documentClass.schema;
 
+/**
+ * The kind of any document name. Actor, Item and ActiveEffect keep their entries above. Any other document goes by its
+ * name, and has the bridge's own flag where its schema has flags: a Setting has none (common/documents/setting.mjs:42-52).
+ */
+export function kindOf(documentName) {
+  if (Object.hasOwn(KINDS, documentName)) return KINDS[documentName];
+  const { fields } = CONFIG[documentName].documentClass.schema;
+  return {
+    document: documentName,
+    noun: documentName,
+    ownFlags: Object.hasOwn(fields, "flags") ? [OWN_FLAG] : [],
+    schemaFor: {},
+    alsoListed: ""
+  };
+}
+
+/** The `schemaFor` of the documents of a name, for a check that goes on into the embedded documents given with one. */
+export const embeddedSchemas = (documentName) => kindOf(documentName).schemaFor;
+
 export const refuse = (message, where = "") =>
   new MethodError("invalid_params", `${where}${message} Nothing was written.`);
 
 export const modelRefusal = (kind, error, where = "") =>
   refuse(`Foundry's ${kind.noun} model refuses the data: ${error.message}`, where);
 
-/** The given data and the entries to remove, against the fields the document stores. Reads only. */
-export function checkAsked(kind, asked, remove, type, where = "") {
+/**
+ * The given data and the entries to remove, against the fields the document stores. Reads only. With `embedded`, as
+ * fieldProblems takes it, the embedded documents given inside the data are checked too, and without it refused.
+ */
+export function checkAsked(kind, asked, remove, type, where = "", embedded) {
   const given = kind.ownFlags.filter((path) => hasPath(asked, path));
   if (given.length > 0) {
     throw refuse(
@@ -56,10 +78,11 @@ export function checkAsked(kind, asked, remove, type, where = "") {
       where
     );
   }
-  const problems = fieldProblems(schemaOf(kind), asked, { type, schemaFor: kind.schemaFor });
+  const problems = fieldProblems(schemaOf(kind), asked, { type, schemaFor: kind.schemaFor, embedded });
   if (problems.length > 0) {
+    const ofType = type === undefined ? "" : ` and type ${type}`;
     throw refuse(
-      `${explainFieldProblems(problems)} get_schema with document ${kind.document} and type ${type} lists the stored fields.${kind.alsoListed}`,
+      `${explainFieldProblems(problems)} get_schema with document ${kind.document}${ofType} lists the stored fields.${kind.alsoListed}`,
       where
     );
   }
@@ -104,9 +127,12 @@ export function checkRemoval(kind, document, remove, where = "", advice = "") {
   }
 }
 
-/** What a write is to bring about, with the HTML fields of the wanted data compared by what they say. */
-export const writeOf = (kind, wanted, remove, type) => ({
+/**
+ * What a write is to bring about, with the HTML fields of the wanted data compared by what they say. `given` is the
+ * data the HTML fields are found in, where the wanted data is in another shape than the schema describes.
+ */
+export const writeOf = (kind, wanted, remove, type, given = wanted, embedded) => ({
   wanted,
   remove,
-  same: sameHtml(schemaOf(kind), wanted, canonicalHtml, { type, schemaFor: kind.schemaFor })
+  same: sameHtml(schemaOf(kind), given, canonicalHtml, { type, schemaFor: kind.schemaFor, embedded })
 });

@@ -20,6 +20,7 @@ import {
   DocumentOwnershipField,
   EmbeddedCollectionField,
   EmbeddedDataField,
+  EmbeddedDocumentField,
   HTMLField,
   MappingField,
   NumberField,
@@ -200,6 +201,108 @@ describe("fieldProblems", () => {
   it("refuses any data for an embedded collection, whose documents the tools take through inputs of their own", () => {
     assert.deepEqual(fieldProblems(schema, { effects: [{ anything: 1 }] }), [{ path: "effects", problem: "embedded" }]);
     assert.deepEqual(fieldProblems(schema, { name: "x", effects: [] }), [{ path: "effects", problem: "embedded" }]);
+  });
+});
+
+/** Stands in for the TypeDataField of a journal page, whose spell pages have a data model. */
+class PageDataField extends TypeDataField {
+  getModelForType(type: string) {
+    return type === "spell" ? { schema: new SchemaField({ level: new NumberField() }) } : null;
+  }
+}
+
+describe("fieldProblems with the embedded documents given inside the data", () => {
+  const page = {
+    documentName: "JournalEntryPage",
+    schema: new SchemaField({
+      name: new StringField(),
+      type: new StringField({ initial: "text" }),
+      system: new PageDataField(),
+      text: new SchemaField({ content: new HTMLField() }),
+      flags: new DocumentFlagsField()
+    })
+  };
+  const item = {
+    documentName: "Item",
+    schema: new SchemaField({
+      name: new StringField(),
+      type: new StringField(),
+      system: new TypeDataField(),
+      effects: new EmbeddedCollectionField(page)
+    })
+  };
+  const delta = { documentName: "ActorDelta", schema: new SchemaField({ name: new StringField() }) };
+  const entry = new SchemaField({
+    name: new StringField(),
+    pages: new EmbeddedCollectionField(page),
+    items: new EmbeddedCollectionField(item),
+    delta: new EmbeddedDocumentField(delta),
+    loose: new EmbeddedCollectionField({ documentName: "Loose" })
+  });
+  const embedded = () => ({});
+  const problems = (data: Record<string, unknown>) =>
+    fieldProblems(entry, data, { embedded }).map(({ path, problem }) => [path, problem]);
+
+  it("checks each embedded document against the schema of its own class, at its place in the list", () => {
+    assert.deepEqual(problems({ name: "Lore", pages: [{ name: "One", text: { content: "<p>x</p>" } }] }), []);
+    assert.deepEqual(problems({ pages: [{ name: "One" }, { nmae: "Two", text: { contnet: "x" } }] }), [
+      ["pages.1.nmae", "unknown"],
+      ["pages.1.text.contnet", "unknown"]
+    ]);
+  });
+
+  it("checks the system data of an embedded document by the type it names, or else by the type Foundry fills in", () => {
+    assert.deepEqual(problems({ pages: [{ type: "spell", system: { level: 3, school: "evo" } }] }), [
+      ["pages.0.system.school", "unknown"]
+    ]);
+    assert.deepEqual(problems({ pages: [{ system: { level: 3 } }] }), [["pages.0.system", "model"]]);
+    assert.deepEqual(problems({ items: [{ type: "npc", system: { cr: 1, ac: 2 } }] }), [
+      ["items.0.system.ac", "unknown"]
+    ]);
+  });
+
+  it("asks for the type of an embedded document that names none and gets none filled in, where its system data needs one", () => {
+    const found = fieldProblems(
+      entry,
+      { items: [{ name: "Sword", system: { cr: 1 } }, { name: "Bare" }] },
+      { embedded }
+    );
+    assert.deepEqual(found, [{ path: "items.0.system", problem: "model", type: undefined }]);
+  });
+
+  it("goes on into the embedded documents of an embedded document, and into a single embedded document", () => {
+    assert.deepEqual(problems({ items: [{ type: "npc", effects: [{ name: "Lit", glow: 1 }] }] }), [
+      ["items.0.effects.0.glow", "unknown"]
+    ]);
+    assert.deepEqual(problems({ delta: { name: "Own", hp: 3 } }), [["delta.hp", "unknown"]]);
+    assert.deepEqual(problems({ delta: null }), []);
+  });
+
+  it("reports a collection whose class it cannot read as unchecked, and leaves a list that is none to the model", () => {
+    assert.deepEqual(problems({ loose: [{ anything: 1 }] }), [["loose.0", "unchecked"]]);
+    assert.deepEqual(problems({ pages: { name: "One" } }), []);
+  });
+
+  it("finds a reserved key inside an embedded document as anywhere else", () => {
+    assert.deepEqual(problems({ pages: [{ flags: { "a.b": 1 } }] }), [["pages.0.flags", "reserved"]]);
+  });
+
+  it("keeps refusing embedded documents for a walk that was not asked to follow them", () => {
+    assert.deepEqual(fieldProblems(entry, { pages: [{ name: "One" }] }), [{ path: "pages", problem: "embedded" }]);
+    assert.deepEqual(fieldProblems(entry, { delta: { name: "Own", hp: 3 } }), [
+      { path: "delta.hp", problem: "unknown" }
+    ]);
+  });
+
+  it("finds the HTML leaves of embedded documents, so that a stored page is compared by what it says", () => {
+    const data = { pages: [{ name: "One", text: { content: "<p>a</p>" } }] };
+    const same = sameHtml(entry, data, (html) => html.toLowerCase(), { embedded });
+    assert.equal(same("pages.0.text.content", "<P>a</P>", "<p>a</p>"), true);
+    assert.equal(same("pages.0.name", "ONE", "one"), false);
+    assert.equal(
+      sameHtml(entry, data, (html) => html.toLowerCase())("pages.0.text.content", "<P>a</P>", "<p>a</p>"),
+      false
+    );
   });
 });
 

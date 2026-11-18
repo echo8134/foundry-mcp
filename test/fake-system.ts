@@ -23,6 +23,9 @@ export class ForeignDocumentField extends DocumentIdField {
   }
 }
 export class DocumentUUIDField extends StringField {}
+/** The `type` of a document that has subtypes (common/data/fields.mjs:4285-4310). */
+export class DocumentTypeField extends StringField {}
+export class JSONField extends StringField {}
 export class ObjectField extends DataField {}
 /** Foundry's TypeDataField: the data model of the document type, from CONFIG (common/data/fields.mjs:4385-4388). */
 export class TypeDataField extends ObjectField {
@@ -51,7 +54,26 @@ export class ArrayField extends DataField {
   }
 }
 export class SetField extends ArrayField {}
-export class EmbeddedCollectionField extends ArrayField {}
+const configured = (documentName: string) => (globalThis as Record<string, any>).CONFIG?.[documentName]?.documentClass;
+/**
+ * The documents of one class embedded in another. Foundry's field gives the class configured for the name as `model`
+ * and its schema as `schema` (common/data/fields.mjs:3033-3043).
+ */
+export class EmbeddedCollectionField extends ArrayField {
+  get model() {
+    return configured(this.element.documentName) ?? this.element;
+  }
+  get schema() {
+    return this.model.schema;
+  }
+}
+/** One embedded document: the field is the schema of its class, which it names as `model` (common/data/fields.mjs:3415-3462). */
+export class EmbeddedDocumentField extends EmbeddedDataField {
+  constructor(model: { documentName: string; schema: SchemaField }, options: Record<string, any> = {}) {
+    super(model.schema.fields, { nullable: true, ...options });
+    this.model = model;
+  }
+}
 export class TypedObjectField extends ObjectField {
   constructor(element: DataField, options: Record<string, any> = {}) {
     super(options);
@@ -242,7 +264,7 @@ export function systemConfig() {
   const actorSchema = new SchemaField({
     _id: new DocumentIdField({ nullable: true }),
     name: new StringField({ initial: "" }),
-    type: new StringField(),
+    type: new DocumentTypeField(),
     img: new FilePathField({ nullable: true, initial: null }),
     system: new TypeDataField(document("Actor")),
     prototypeToken: new EmbeddedDataField({
@@ -261,7 +283,7 @@ export function systemConfig() {
   const itemSchema = new SchemaField({
     _id: new DocumentIdField({ nullable: true, initial: null }),
     name: new StringField({ required: true, blank: false }),
-    type: new StringField(),
+    type: new DocumentTypeField(),
     img: new FilePathField({ nullable: true, initial: "icons/svg/item-bag.svg" }),
     system: new TypeDataField(Item),
     effects: new EmbeddedCollectionField(ActiveEffect),
@@ -275,7 +297,7 @@ export function systemConfig() {
     _id: new DocumentIdField({ nullable: true, initial: null }),
     name: new StringField({ required: true, blank: false }),
     img: new FilePathField({ nullable: true, initial: "icons/svg/aura.svg" }),
-    type: new StringField({ initial: "base" }),
+    type: new DocumentTypeField({ initial: "base" }),
     system: new TypeDataField(ActiveEffect),
     disabled: new BooleanField({ initial: false }),
     duration: new SchemaField({
@@ -303,7 +325,10 @@ export function systemConfig() {
   const description = () => new SchemaField({ value: new HTMLField({ initial: "" }) });
   return {
     Actor: {
-      documentClass: { schema: actorSchema, metadata: { baseTypeAllowed: false } },
+      documentClass: {
+        schema: actorSchema,
+        metadata: { baseTypeAllowed: false, embedded: { ActiveEffect: "effects", Item: "items" } }
+      },
       dataModels: {
         character: {
           schema: creature({ level: new NumberField({ integer: true, min: 0, initial: 1, persisted: false }) })
@@ -335,7 +360,10 @@ export function systemConfig() {
       }
     },
     Item: {
-      documentClass: { schema: itemSchema, metadata: { baseTypeAllowed: false } },
+      documentClass: {
+        schema: itemSchema,
+        metadata: { baseTypeAllowed: false, embedded: { ActiveEffect: "effects" } }
+      },
       dataModels: {
         weapon: {
           schema: new SchemaField({
@@ -366,7 +394,7 @@ export function systemConfig() {
       }
     },
     ActiveEffect: {
-      documentClass: { schema: effectSchema, metadata: { baseTypeAllowed: true } },
+      documentClass: { schema: effectSchema, metadata: { baseTypeAllowed: true, embedded: {} } },
       dataModels: {
         base: { schema: new SchemaField({ changes: effectChanges() }) },
         enchantment: {

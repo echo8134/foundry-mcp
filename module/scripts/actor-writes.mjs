@@ -310,6 +310,16 @@ export async function ensureActor(request) {
   };
 }
 
+/**
+ * The names of the scenes a world actor has tokens on, which its deletion would leave without an actor. concreteOnly
+ * leaves out tokens that are not stored in their scene, such as the ones place_tokens builds to check its input
+ * (client/documents/actor.mjs:589-597).
+ */
+export function scenesWithTokensOf(actor) {
+  const scenes = actor.getDependentTokens({ concreteOnly: true }).map((token) => token.parent.name);
+  return [...new Set(scenes)];
+}
+
 /** Every check of a deletion, and the world actors it deletes. Reads only. */
 function planDeletion({ ids, handMade }) {
   const actors = [...new Set(ids)].flatMap((id) => game.actors.get(id) ?? []);
@@ -319,11 +329,9 @@ function planDeletion({ ids, handMade }) {
       `These actors were not made by this bridge: ${foreign.map((actor) => `${actor.name} (${actor.id})`).join(", ")}. Foundry cannot bring a deleted actor back. Pass handMade: true to delete them as well.`
     );
   }
-  // concreteOnly leaves out tokens that are not stored in their scene, such as the ones place_tokens builds to check
-  // its input (client/documents/actor.mjs:589-597).
   const placed = actors.flatMap((actor) => {
-    const scenes = actor.getDependentTokens({ concreteOnly: true }).map((token) => token.parent.name);
-    return scenes.length > 0 ? [`${actor.name} (${actor.id}) on ${[...new Set(scenes)].join(", ")}`] : [];
+    const scenes = scenesWithTokensOf(actor);
+    return scenes.length > 0 ? [`${actor.name} (${actor.id}) on ${scenes.join(", ")}`] : [];
   });
   if (placed.length > 0) {
     throw refuse(

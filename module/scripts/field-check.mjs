@@ -23,10 +23,15 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   `heldType` is the type of the behavior the entry is the config of, which has no type of its own.
  */
 /**
+ * @typedef {(documentName: string) => Readonly<Record<string, SchemaFor>>} EmbeddedSchemas the `schemaFor` of the
+ *   documents of a name, for a walk that goes on into the embedded documents given inside the data
+ */
+/**
  * @typedef {{type?: string, heldType?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[],
- *   html: Set<string>, idArrays: Set<string>}} Walk
+ *   html: Set<string>, idArrays: Set<string>, embedded?: EmbeddedSchemas, inEmbedded?: boolean}} Walk
  *   `html` collects the paths of the leaves that lie on an HTMLField, and `idArrays` those of the lists whose elements
- *   are each given an `_id` of their own
+ *   are each given an `_id` of their own. Without `embedded` an embedded document in the data is a problem. `inEmbedded`
+ *   is set below one, where the type comes from the data and not from the caller.
  */
 /** @typedef {{path: string, problem: "unknown" | "field" | "reserved"}} RemovalProblem */
 
@@ -79,6 +84,28 @@ const NEEDS_TYPE =
 const isTypeData = (field) =>
   field !== null && typeof field === "object" && classChain(field).includes("TypeDataField");
 
+/**
+ * The walk that goes on in the data of one embedded document, or null where there is nothing to walk. Its type is the
+ * one the data gives, or else the one Foundry would fill in: the initial value of the `type` field of its class
+ * (common/data/fields.mjs:4285-4310).
+ * @param {any} schema the schema of the embedded document class
+ * @param {unknown} documentName
+ * @param {unknown} value
+ * @param {string} path
+ * @param {Walk} walk
+ * @returns {Walk | null}
+ */
+function embeddedWalk(schema, documentName, value, path, walk) {
+  if (!walk.embedded || typeof documentName !== "string" || schema === null || typeof schema !== "object") {
+    walk.problems.push({ path, problem: walk.embedded ? "unchecked" : "embedded" });
+    return null;
+  }
+  if (!isPlainObject(value)) return null;
+  const initial = schema.fields?.type?.initial;
+  const type = typeof value.type === "string" ? value.type : typeof initial === "string" ? initial : undefined;
+  return { ...walk, type, heldType: undefined, schemaFor: walk.embedded(documentName), inEmbedded: true };
+}
+
 /** @param {any} field @param {unknown} value @param {string} path @param {Walk} walk */
 function checkSchema(field, value, path, walk) {
   if (!isPlainObject(value)) return;
@@ -107,9 +134,24 @@ const STRUCTURES = Object.freeze({
       else check(field.element, child, join(path, key), walk);
     }
   },
-  // The write tools take embedded documents such as items and effects through inputs of their own.
-  EmbeddedCollectionField: (_field, _value, path, walk) => {
-    walk.problems.push({ path, problem: "embedded" });
+  // The actor tools take embedded documents such as items and effects through inputs of their own. A walk with
+  // `embedded` goes on into each one: the field names the class of its documents as `element`, and gives their schema
+  // as `schema` (common/data/fields.mjs:3033-3043).
+  EmbeddedCollectionField: (field, value, path, walk) => {
+    if (!walk.embedded) return void walk.problems.push({ path, problem: "embedded" });
+    if (!Array.isArray(value)) return;
+    for (const [index, child] of value.entries()) {
+      const at = join(path, index);
+      const inner = embeddedWalk(field.schema, field.element?.documentName, child, at, walk);
+      if (inner) check(field.schema, child, at, inner);
+    }
+  },
+  // One embedded document in place of a collection, such as a token's own actor data: the field is the schema of its
+  // class, which it names as `model` (common/data/fields.mjs:3415-3462).
+  EmbeddedDocumentField: (field, value, path, walk) => {
+    if (!walk.embedded) return checkSchema(field, value, path, walk);
+    const inner = embeddedWalk(field, field.model?.documentName, value, path, walk);
+    if (inner) checkSchema(field, value, path, inner);
   },
   ArrayField: (field, value, path, walk) => {
     if (!Array.isArray(value)) return;
@@ -131,8 +173,8 @@ const STRUCTURES = Object.freeze({
     else walk.problems.push({ path, problem: "variant", types: Object.keys(types) });
   },
   TypeDataField: (field, value, path, walk) => {
-    if (walk.type === undefined) throw new TypeError(NEEDS_TYPE);
-    const schema = field.getModelForType?.(walk.type)?.schema;
+    if (walk.type === undefined && !walk.inEmbedded) throw new TypeError(NEEDS_TYPE);
+    const schema = walk.type === undefined ? undefined : field.getModelForType?.(walk.type)?.schema;
     if (schema) check(schema, value, path, walk);
     else if (isPlainObject(value) && Object.keys(value).length > 0) {
       walk.problems.push({ path, problem: "model", type: walk.type });
@@ -156,11 +198,25 @@ const STRUCTURES = Object.freeze({
 });
 
 /**
- * @param {string | undefined} type
- * @param {Readonly<Record<string, SchemaFor>>} schemaFor
+ * @typedef {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>, embedded?: EmbeddedSchemas}} WalkOptions
+ *   `type` is the document type, which picks the data model of a TypeDataField such as `system`. `schemaFor` maps the
+ *   class name of a dnd5e TypeDataField5e, or of a class that extends it, to the schema of each given entry; without
+ *   one, any data below such a field is the problem `unchecked`. With `embedded` the walk goes on into the embedded
+ *   documents given inside the data, each with the type it names; without it, any of them is the problem `embedded`.
+ */
+
+/**
+ * @param {WalkOptions} options
  * @returns {Walk}
  */
-const newWalk = (type, schemaFor) => ({ type, schemaFor, problems: [], html: new Set(), idArrays: new Set() });
+const newWalk = ({ type, schemaFor = {}, embedded }) => ({
+  type,
+  schemaFor,
+  embedded,
+  problems: [],
+  html: new Set(),
+  idArrays: new Set()
+});
 
 /** @param {unknown} field @param {unknown} value @param {string} path @param {Walk} walk */
 function check(field, value, path, walk) {
@@ -176,18 +232,15 @@ function check(field, value, path, walk) {
  * instruction. Data the walk cannot follow is a problem, not a pass.
  * @param {object} schema a SchemaField
  * @param {Record<string, unknown>} data
- * @param {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>}} [options] `type` is the document type,
- *   which picks the data model of a TypeDataField such as `system`. `schemaFor` maps the class name of a dnd5e
- *   TypeDataField5e, or of a class that extends it, to the schema of each given entry; without one, any data below
- *   such a field is the problem `unchecked`.
+ * @param {WalkOptions} [options]
  * @returns {FieldProblem[]}
  * @throws {TypeError} when the schema has a TypeDataField and no type is given: without it the data below that field
  *   would go unchecked
  */
-export function fieldProblems(schema, data, { type, schemaFor = {} } = {}) {
+export function fieldProblems(schema, data, options = {}) {
   const { fields = {} } = /** @type {{fields?: Record<string, unknown>}} */ (schema);
-  if (type === undefined && Object.values(fields).some(isTypeData)) throw new TypeError(NEEDS_TYPE);
-  const walk = newWalk(type, schemaFor);
+  if (options.type === undefined && Object.values(fields).some(isTypeData)) throw new TypeError(NEEDS_TYPE);
+  const walk = newWalk(options);
   findReservedKeys(data, "", walk.problems);
   check(schema, data, "", walk);
   return walk.problems;
@@ -200,11 +253,11 @@ export function fieldProblems(schema, data, { type, schemaFor = {} } = {}) {
  * @param {Record<string, unknown>} data the data whose HTML leaves are compared
  * @param {(html: string) => string} canonical the content of an HTML text in a form that does not depend on how it is
  *   spelled
- * @param {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>}} [options] as for fieldProblems
+ * @param {WalkOptions} [options] as for fieldProblems
  * @returns {import("./data-diff.mjs").SameLeaf}
  */
-export function sameHtml(schema, data, canonical, { type, schemaFor = {} } = {}) {
-  const walk = newWalk(type, schemaFor);
+export function sameHtml(schema, data, canonical, options = {}) {
+  const walk = newWalk(options);
   check(schema, data, "", walk);
   return (path, wanted, stored) =>
     walk.html.has(path) &&
@@ -219,11 +272,11 @@ export function sameHtml(schema, data, canonical, { type, schemaFor = {} } = {})
  * starting equipment.
  * @param {object} schema a SchemaField
  * @param {Record<string, unknown>} data the data whose lists are looked at
- * @param {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>}} [options] as for fieldProblems
+ * @param {WalkOptions} [options] as for fieldProblems
  * @returns {string[]} the paths of the given lists whose elements are each given an `_id` of their own
  */
-export function elementIdArrays(schema, data, { type, schemaFor = {} } = {}) {
-  const walk = newWalk(type, schemaFor);
+export function elementIdArrays(schema, data, options = {}) {
+  const walk = newWalk(options);
   check(schema, data, "", walk);
   return [...walk.idArrays];
 }
