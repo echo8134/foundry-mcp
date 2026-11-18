@@ -20,6 +20,7 @@ import {
 } from "./document-access.mjs";
 import { rulesOf, secretsGiven, withoutSecrets } from "./document-rules.mjs";
 import { MethodError } from "./errors.mjs";
+import { documentsWithin } from "./field-check.mjs";
 import { withoutStoredFlag } from "./item-data.mjs";
 import { getPath } from "./paths.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
@@ -101,6 +102,10 @@ async function planCreation({ cls, parent, pack }, given, where) {
   const asked = withoutOwnFlags(given, cls, where);
   const type = typeOfNew(cls, asked, where);
   refuseRuled(rulesOf(name).create?.(asked), where);
+  const walked = { type, schemaFor: kind.schemaFor, embedded: embeddedSchemas };
+  for (const { documentName, path, data } of documentsWithin(cls.schema, asked, walked)) {
+    refuseRuled(rulesOf(documentName).create?.(data), `${where}${path}: `);
+  }
   checkAsked(kind, asked, [], type, where, embeddedSchemas);
   const data = asBridgeMade(asked, cls);
   let built;

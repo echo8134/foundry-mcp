@@ -26,12 +26,15 @@ import { classChain, initialKeys } from "./schema.mjs";
  * @typedef {(documentName: string) => Readonly<Record<string, SchemaFor>>} EmbeddedSchemas the `schemaFor` of the
  *   documents of a name, for a walk that goes on into the embedded documents given inside the data
  */
+/** @typedef {{documentName: string, path: string, data: Record<string, unknown>}} GivenDocument a document given inside the data of another: its document name, where it lies, and its own data */
 /**
  * @typedef {{type?: string, heldType?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[],
- *   html: Set<string>, idArrays: Set<string>, embedded?: EmbeddedSchemas, inEmbedded?: boolean}} Walk
- *   `html` collects the paths of the leaves that lie on an HTMLField, and `idArrays` those of the lists whose elements
- *   are each given an `_id` of their own. Without `embedded` an embedded document in the data is a problem. `inEmbedded`
- *   is set below one, where the type comes from the data and not from the caller.
+ *   html: Set<string>, idArrays: Set<string>, documents: GivenDocument[], embedded?: EmbeddedSchemas,
+ *   inEmbedded?: boolean}} Walk
+ *   `html` collects the paths of the leaves that lie on an HTMLField, `idArrays` those of the lists whose elements
+ *   are each given an `_id` of their own, and `documents` the documents the walk went into. Without `embedded` an
+ *   embedded document in the data is a problem. `inEmbedded` is set below one, where the type comes from the data and
+ *   not from the caller.
  */
 /** @typedef {{path: string, problem: "unknown" | "field" | "reserved"}} RemovalProblem */
 
@@ -101,6 +104,7 @@ function embeddedWalk(schema, documentName, value, path, walk) {
     return null;
   }
   if (!isPlainObject(value)) return null;
+  walk.documents.push({ documentName, path, data: value });
   const initial = schema.fields?.type?.initial;
   const type = typeof value.type === "string" ? value.type : typeof initial === "string" ? initial : undefined;
   return { ...walk, type, heldType: undefined, schemaFor: walk.embedded(documentName), inEmbedded: true };
@@ -215,7 +219,8 @@ const newWalk = ({ type, schemaFor = {}, embedded }) => ({
   embedded,
   problems: [],
   html: new Set(),
-  idArrays: new Set()
+  idArrays: new Set(),
+  documents: []
 });
 
 /** @param {unknown} field @param {unknown} value @param {string} path @param {Walk} walk */
@@ -279,6 +284,20 @@ export function elementIdArrays(schema, data, options = {}) {
   const walk = newWalk(options);
   check(schema, data, "", walk);
   return [...walk.idArrays];
+}
+
+/**
+ * A write that creates a document creates the documents given inside its data with it, so what holds for a new
+ * document of a name holds for each of these.
+ * @param {object} schema a SchemaField
+ * @param {Record<string, unknown>} data
+ * @param {WalkOptions} [options] as for fieldProblems
+ * @returns {GivenDocument[]} the documents given inside the data, at any depth, that the walk goes into
+ */
+export function documentsWithin(schema, data, options = {}) {
+  const walk = newWalk(options);
+  check(schema, data, "", walk);
+  return walk.documents;
 }
 
 /**

@@ -2,13 +2,14 @@
 // read consult. A rule answers with the sentence of a refusal, or with null.
 
 import { scenesWithTokensOf } from "./actor-writes.mjs";
-import { hasPath } from "./data-diff.mjs";
+import { hasPath, sameData } from "./data-diff.mjs";
 
 /**
  * @typedef {object} Rules
  * @property {string} [unwritten] why these tools write no document of the name, and what writes it instead
  * @property {readonly string[]} [secret] fields that are never returned and never compared with what was written
- * @property {(data: Record<string, any>) => string | null} [create] why the data makes no new document
+ * @property {(data: Record<string, any>) => string | null} [create] why the data makes no new document, asked of a
+ *   document that is created and of every document given inside the data of another
  * @property {(document: any, data: Record<string, any>, remove: readonly string[]) => string | null} [update] why the
  *   document is not changed this way
  * @property {(document: any) => string | null} [remove] why the document is not deleted
@@ -28,6 +29,40 @@ const PADDED =
 const isPadded = (password) => typeof password === "string" && password !== password.trim();
 
 const isSelf = (user) => user.id === game.user.id;
+
+const UNATTENDED = "by itself, without anyone clicking";
+
+const MACRO_REACH = "in one connected browser or in all of them, the players' included";
+
+/**
+ * The region behaviors through which Foundry runs stored code by itself, each with the field of its system data that
+ * says which code. executeScript runs its source as a function (client/data/region-behaviors/execute-script.mjs:32-37)
+ * and executeMacro the macro at its uuid (execute-macro.mjs:32-46), for every region event the behavior lists and in
+ * every browser the event reaches. Nobody has to click: creating one fires behaviorActivated at once on each client
+ * that has the scene (client/documents/region.mjs:2566-2582).
+ */
+const RUNS_CODE = Object.freeze({
+  executeScript: {
+    field: "source",
+    runs: `its source is code that Foundry runs ${UNATTENDED}, in every connected browser, the players' included`
+  },
+  executeMacro: { field: "uuid", runs: `it makes Foundry run a macro ${UNATTENDED}, ${MACRO_REACH}` }
+});
+
+/** Foundry trims the type it stores (common/data/fields.mjs:1764), so a padded one names the same type. */
+const codeOf = (type) => (typeof type === "string" && Object.hasOwn(RUNS_CODE, type.trim()) ? type.trim() : null);
+
+/** The region behaviors of the world's scenes that run the macro (client/data/region-behaviors/execute-macro.mjs:34). */
+const behaviorsRunning = (macro) =>
+  game.scenes
+    .map((scene) =>
+      scene.regions.map((region) =>
+        region.behaviors.filter(
+          (behavior) => behavior.type === "executeMacro" && behavior._source.system?.uuid === macro.uuid
+        )
+      )
+    )
+    .flat(2);
 
 /** @type {Readonly<Record<string, Rules>>} */
 const RULES = Object.freeze({
@@ -64,6 +99,32 @@ const RULES = Object.freeze({
   Setting: {
     unwritten:
       "These tools write no Setting. A world setting is a registered value with a type and a change handler, and a write of the stored document goes past both. Reading settings works (list_documents and get_document)."
+  },
+  RegionBehavior: {
+    create: (data) => {
+      const type = codeOf(data.type);
+      return type
+        ? `These tools create no region behavior of the type ${type}: ${RUNS_CODE[type].runs}. The Gamemaster adds such a behavior in Foundry's own region configuration.`
+        : null;
+    },
+    update: (behavior, data) => {
+      const type = codeOf(behavior.type);
+      if (!type) return null;
+      const { field, runs } = RUNS_CODE[type];
+      const given = data.system?.[field];
+      return given !== undefined && !sameData(given, behavior._source.system?.[field])
+        ? `${behavior.uuid} is a region behavior of the type ${type}: ${runs}. These tools do not change its ${field}. The Gamemaster changes it in Foundry's own region configuration.`
+        : null;
+    }
+  },
+  Macro: {
+    update: (macro, data) => {
+      if (data.command === undefined || data.command === macro._source.command) return null;
+      const behaviors = behaviorsRunning(macro);
+      return behaviors.length > 0
+        ? `Foundry runs the macro ${macro.name} (${macro.uuid}) ${UNATTENDED}, ${MACRO_REACH}: the region behavior ${behaviors.map((behavior) => behavior.uuid).join(", ")} names it. These tools do not change the command of such a macro. The Gamemaster changes it in Foundry's own macro configuration.`
+        : null;
+    }
   },
   ActorDelta: {
     unwritten:
