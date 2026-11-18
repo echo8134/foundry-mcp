@@ -573,16 +573,7 @@ export function fakeDocuments(env: Env) {
        * An update is cleaned, passes the stand-in hooks, and is skipped without an error when a hook refuses it or its
        * result fails validation (client/data/client-backend.mjs:237-259). The server then stores HTML in its own spelling.
        */
-      async update(changes: Source) {
-        await env.delay();
-        assertUnlocked(this.pack, "update");
-        log.documentWrites.push({
-          action: "update",
-          document: name,
-          parent: this.parent?.uuid ?? null,
-          pack: this.pack,
-          data: [cloneChanges(changes)]
-        });
+      #change(changes: Source) {
         const fieldsOfType = fieldsFor(definition, this._source.type);
         const cleaned = cleanValue(fieldsOfType, cloneChanges(changes), {
           partial: true,
@@ -599,19 +590,63 @@ export function fakeDocuments(env: Env) {
         sanitizeHtml(fieldsOfType, cleaned);
         applyChanges(this._source, cleaned);
         definition.onServer?.(this._source);
-        const failure = control.documentError?.("update", name);
-        if (failure) throw new Error(failure);
         return this;
       }
 
+      async update(changes: Source) {
+        await env.delay();
+        assertUnlocked(this.pack, "update");
+        log.documentWrites.push({
+          action: "update",
+          document: name,
+          parent: this.parent?.uuid ?? null,
+          pack: this.pack,
+          data: [cloneChanges(changes)]
+        });
+        const updated = this.#change(changes);
+        const failure = control.documentError?.("update", name);
+        if (failure) throw new Error(failure);
+        return updated;
+      }
+
       /**
-       * Document.create with one document (common/abstract/document.mjs:732-737). It resolves to nothing, without an
-       * error, for data the model refuses and for a creation a hook refuses (client/data/client-backend.mjs:91-108). The
-       * server gives the document its id, or with keepId keeps the one it is given (common/abstract/_types.mjs:120),
+       * Document.updateDocuments (common/abstract/document.mjs:651-655): the updates of one request, each under the id
+       * of its document. Every id is looked up before anything is written, and one that is not there throws
+       * (client/data/client-backend.mjs:227-228). The call resolves with the documents it updated.
+       */
+      static async updateDocuments(
+        updates: Source[],
+        { parent = null, pack = null }: { parent?: any; pack?: string | null } = {}
+      ) {
+        await env.delay();
+        const inPack: string | null = parent?.pack ?? pack;
+        assertUnlocked(inPack, "update");
+        const collection = container(name, parent, inPack);
+        for (const { _id } of updates) {
+          if (!_id) throw new Error("You must provide an _id for every object in the update data Array.");
+          if (!collection.has(_id)) throw new Error(`${name} ${_id} does not exist`);
+        }
+        log.documentWrites.push({
+          action: "update",
+          document: name,
+          parent: parent?.uuid ?? null,
+          pack: inPack,
+          data: updates.map(cloneChanges)
+        });
+        const updated = updates.flatMap(({ _id, ...changes }) => collection.get(_id).#change(changes) ?? []);
+        const failure = control.documentError?.("update", name);
+        if (failure) throw new Error(failure);
+        return updated;
+      }
+
+      /**
+       * Document.createDocuments (common/abstract/document.mjs:608-612). It leaves out, without an error, data the
+       * model refuses and a creation a hook refuses, and creates the rest (client/data/client-backend.mjs:91-108). The
+       * server gives each document its id, or with keepId keeps the one it is given (common/abstract/_types.mjs:120),
        * and keeps the ids of the embedded documents created with it.
        */
-      static async create(
-        data: Source,
+      static async createDocuments(
+        data: Source[],
         { parent = null, pack = null, keepId = false }: { parent?: any; pack?: string | null; keepId?: boolean } = {}
       ) {
         await env.delay();
@@ -622,26 +657,36 @@ export function fakeDocuments(env: Env) {
           document: name,
           parent: parent?.uuid ?? null,
           pack: inPack,
-          data: [structuredClone(data)],
+          data: structuredClone(data),
           ...(keepId && { keepId: true })
         });
-        const failure = control.documentError?.("create", name, data);
-        if (failure) throw new Error(failure);
-        let source: Source;
-        try {
-          source = builtSource(definition, structuredClone(data));
-        } catch (error) {
-          log.notifications.push(`${name} skipped: ${(error as Error).message}`);
-          return undefined;
+        for (const one of data) {
+          const failure = control.documentError?.("create", name, one);
+          if (failure) throw new Error(failure);
         }
-        if (control.vetoDocument?.(name, data)) {
-          log.notifications.push(`${name} creation prevented`);
-          return undefined;
-        }
-        source._id = (keepId && source._id) || newId(name);
-        control.filterDocumentData?.(name, source);
-        storedOnServer(definition, source);
-        return store(name, source, parent, inPack);
+        return data.flatMap((one) => {
+          let source: Source;
+          try {
+            source = builtSource(definition, structuredClone(one));
+          } catch (error) {
+            log.notifications.push(`${name} skipped: ${(error as Error).message}`);
+            return [];
+          }
+          if (control.vetoDocument?.(name, one)) {
+            log.notifications.push(`${name} creation prevented`);
+            return [];
+          }
+          source._id = (keepId && source._id) || newId(name);
+          control.filterDocumentData?.(name, source);
+          storedOnServer(definition, source);
+          return [store(name, source, parent, inPack)];
+        });
+      }
+
+      /** Document.create with one document, which resolves to nothing where none was made (document.mjs:732-737). */
+      static async create(data: Source, context: { parent?: any; pack?: string | null; keepId?: boolean } = {}) {
+        const [created] = await FakeDocument.createDocuments([data], context);
+        return created;
       }
 
       /**

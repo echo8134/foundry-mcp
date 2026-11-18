@@ -16,6 +16,7 @@ import { idFor } from "./labels.mjs";
 import { claimNamed, FLAG_SCOPE } from "./scope.mjs";
 import {
   checkAsked,
+  firstRepeat,
   forWrite,
   KINDS,
   NOT_CREATED,
@@ -91,13 +92,9 @@ const NAME_REFUSALS = Object.freeze({
 });
 
 function refuseRepeats(plans, noun) {
-  const seen = new Map();
-  for (const plan of plans) {
-    const first = seen.get(plan.key);
-    if (first !== undefined) {
-      throw refuse(`${first} and ${plan.where} lead to the same ${noun}. Give it once, with all its changes.`);
-    }
-    seen.set(plan.key, plan.where);
+  const repeat = firstRepeat(plans);
+  if (repeat) {
+    throw refuse(`${repeat.first} and ${repeat.second} lead to the same ${noun}. Give it once, with all its changes.`);
   }
 }
 

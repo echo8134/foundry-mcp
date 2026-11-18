@@ -75,6 +75,29 @@ const UNWRITTEN = "Nothing was written.";
 export const refuse = (message, where = "") => new MethodError("invalid_params", `${where}${message} ${UNWRITTEN}`);
 
 /**
+ * A check that answers with the sentence of a refusal or with nothing, as the rules of document-rules.mjs do: its
+ * sentence refuses the call, or the entry of it that `where` names.
+ * @param {string | null | undefined} sentence
+ */
+export function refuseRuled(sentence, where = "") {
+  if (sentence) throw refuse(sentence, where);
+}
+
+/**
+ * The first two entries of a request that lead to one thing, each by its place in the request. Null where none do.
+ * @param {Iterable<{key: string, where: string}>} entries
+ * @returns {{key: string, first: string, second: string} | null}
+ */
+export function firstRepeat(entries) {
+  const seen = new Map();
+  for (const { key, where } of entries) {
+    if (seen.has(key)) return { key, first: seen.get(key), second: where };
+    seen.set(key, where);
+  }
+  return null;
+}
+
+/**
  * A lookup that a write begins with, such as the document a UUID names. What the lookup cannot find ends the write
  * before it wrote anything, and its error says so.
  * @template T
@@ -225,12 +248,19 @@ export async function planUpdate(kind, document, asked, { remove = [], where = "
  * @param {any} cls the document class
  * @param {Record<string, any>} data what the document is created from: the asked data, and what the caller adds to it
  * @param {Record<string, any>} asked the data a caller asked for, which the stored document is compared with
- * @param {{remove?: readonly string[], parent?: any, pack?: string | null, where?: string}} [options] `remove` names
- *   the entries the caller took out of the data, which the stored document is to lack
+ * @param {{remove?: readonly string[], parent?: any, pack?: string | null, where?: string, same?: (built: any) => import("./data-diff.mjs").SameLeaf}} [options]
+ *   `remove` names the entries the caller took out of the data, which the stored document is to lack. `same` is asked
+ *   of the built document, and takes two values of a leaf as one as the `same` of planUpdate does.
  * @returns {Promise<{built: any, write: import("./data-diff.mjs").Asked}>} the unsaved document, and what its
  *   creation is to bring about
  */
-export async function planBuilt(kind, cls, data, asked, { remove = [], parent = null, pack = null, where = "" } = {}) {
+export async function planBuilt(
+  kind,
+  cls,
+  data,
+  asked,
+  { remove = [], parent = null, pack = null, where = "", same: sameFor } = {}
+) {
   let built;
   try {
     // The constructor keeps the object it is given as the stored data and cleans it in place.
@@ -238,11 +268,12 @@ export async function planBuilt(kind, cls, data, asked, { remove = [], parent = 
   } catch (error) {
     throw modelRefusal(kind, error, where);
   }
+  const same = sameFor?.(built);
   const shape = byPosition(asked, cls);
   const wanted = pickData(byPosition(built.toObject(), cls), shape);
-  checkKeptAsGiven(shape, wanted, where);
+  checkKeptAsGiven(shape, wanted, where, same);
   await checkImage(wanted.img, where);
-  return { built, write: writeOf(kind, wanted, { remove, type: built.type, given: asked, embedded: true }) };
+  return { built, write: writeOf(kind, wanted, { remove, type: built.type, given: asked, embedded: true, same }) };
 }
 
 /** What an entry of a result says in place of its document when Foundry made none for it. */

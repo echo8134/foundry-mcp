@@ -1,5 +1,7 @@
 // @ts-check
 
+import { MethodError } from "./errors.mjs";
+
 export const FLAG_SCOPE = "foundry-mcp";
 
 /**
@@ -33,6 +35,14 @@ export function isOnLevel(document, levelId) {
   return levels.length === 0 || levels.includes(levelId);
 }
 
+/**
+ * How many levels a wall, a light or a region is on, counted as Foundry counts them: one that names no levels is on
+ * every level of its scene (CanvasDocument#includedInLevel, client/documents/abstract/canvas-document.mjs:97-105).
+ * @param {Iterable<string> | undefined} levels
+ * @param {Iterable<string>} sceneLevelIds
+ */
+export const levelCount = (levels, sceneLevelIds) => [...(levels ?? [])].length || [...sceneLevelIds].length;
+
 /** @param {{flags?: any}} document */
 export const isManaged = (document) => document.flags?.[FLAG_SCOPE]?.managed === true;
 
@@ -51,6 +61,34 @@ export const sameLevelSet = (a, b, sceneLevelIds) =>
  */
 export const replacedBySync = (document, levels, sceneLevelIds) =>
   isManaged(document) && sameLevelSet(document.levels, levels, sceneLevelIds);
+
+/**
+ * The entries of a sync that the sync is about, each with its place in the request. An entry of get_scene can be
+ * passed back as it is: one that says it was made by hand (managed: false) and one whose own levels are another level
+ * set than the call's exists already, and the sync does not own it, so it is left out. A call whose entries were all
+ * left out is refused, because it would otherwise remove everything the bridge made on the level set.
+ * @template {{managed?: boolean, levels?: Iterable<string>}} T
+ * @param {readonly T[]} entries
+ * @param {readonly string[]} levels the levels of the call
+ * @param {Iterable<string>} sceneLevelIds
+ * @param {string} noun what the entries are, in the plural, which is also the name of their list in the request
+ * @returns {{entry: T, index: number}[]}
+ */
+export function ownedEntries(entries, levels, sceneLevelIds, noun) {
+  const all = [...sceneLevelIds];
+  const owned = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(
+      ({ entry }) => entry.managed !== false && (entry.levels === undefined || sameLevelSet(entry.levels, levels, all))
+    );
+  if (entries.length > 0 && owned.length === 0) {
+    throw new MethodError(
+      "invalid_params",
+      `All ${entries.length} given ${noun} were left out: each is marked managed: false, which is one made by hand, or has levels of its own that are another level set than this call's (${levels.length > 0 ? levels.join(", ") : "none, which means all levels"}). A sync never touches those. Pass the levels of these ${noun} as the call's levels, or ${noun}: [] to remove the bridge-made ${noun} of this level set. Nothing was written.`
+    );
+  }
+  return owned;
+}
 
 /**
  * What a lookup by name leads to. A write takes the one document of that name the bridge made. It takes none when

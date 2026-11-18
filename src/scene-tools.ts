@@ -132,13 +132,17 @@ const syncLightsInput = z
   })
   .check((ctx) => {
     const { lights } = ctx.value;
-    const kept: unknown[] = [];
+    const checked: unknown[] = [];
     lights.forEach((entry, index) => {
-      if (typeof entry === "object" && entry !== null && (entry as { managed?: unknown }).managed === false) return;
+      // A light made by hand may be one this schema refuses. It keeps its place in the list, and the module leaves it out.
+      if (typeof entry === "object" && entry !== null && (entry as { managed?: unknown }).managed === false) {
+        checked.push({ managed: false });
+        return;
+      }
       const parsed = syncLightSchema.safeParse(entry);
       if (parsed.success) {
         const { id: _id, managed: _managed, ...light } = parsed.data;
-        kept.push(light);
+        checked.push(light);
       } else {
         for (const issue of parsed.error.issues)
           ctx.issues.push({
@@ -149,17 +153,7 @@ const syncLightsInput = z
           });
       }
     });
-    if (lights.length > 0 && kept.length === 0 && ctx.issues.length === 0) {
-      ctx.issues.push({
-        code: "custom",
-        message:
-          `All ${lights.length} given lights were left out as hand-placed (managed: true is bridge-made, managed: false is hand-placed), so nothing was changed. ` +
-          "Hand-placed lights already exist and a sync never touches them. Pass lights: [] to remove the bridge-made lights.",
-        input: lights,
-        path: ["lights"]
-      });
-    }
-    ctx.value = { ...ctx.value, lights: kept };
+    ctx.value = { ...ctx.value, lights: checked };
   });
 
 /** The shapes of a region, as get_scene returns them and sync_regions takes them. */

@@ -741,10 +741,18 @@ describe("MCP tools", () => {
       return result.success ? [] : result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
     };
 
-    it("refuses a call whose given lights are all hand-placed, and says so", () => {
-      const [issue] = issues({ lights: [{ at: [1, 1], dim: 10, managed: false }, { managed: false }] });
-      assert.match(issue!, /^lights: All 2 given lights were left out as hand-placed.*nothing was changed/);
-      assert.match(issue!, /lights: \[\] to remove the bridge-made lights/);
+    it("sends a hand-placed light on as no more than that, unchecked, for the module to leave out", () => {
+      assert.deepEqual(
+        parse({
+          lights: [
+            { at: [1, 1], dim: 10, managed: false },
+            { managed: false, at: "x" }
+          ]
+        }).data,
+        {
+          lights: [{ managed: false }, { managed: false }]
+        }
+      );
     });
 
     it("lets a literally empty list through, and sends a light's own levels on for the module to compare", () => {
@@ -757,10 +765,7 @@ describe("MCP tools", () => {
         ]
       });
       assert.deepEqual(mixed.data, {
-        lights: [
-          { at: [50, 50], dim: 10, levels: ["lvl2"] },
-          { at: [2, 2], dim: 5 }
-        ]
+        lights: [{ at: [50, 50], dim: 10, levels: ["lvl2"] }, { at: [2, 2], dim: 5 }, { managed: false }]
       });
       assert.deepEqual(
         parse({ levels: ["lvl1"], lights: [{ id: "l", managed: true, levels: [], at: [1, 1], dim: 5 }] }).data,

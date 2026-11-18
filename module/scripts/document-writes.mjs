@@ -21,12 +21,14 @@ import { documentsWithin, initialTypeOf } from "./field-check.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
   checkAsked,
+  firstRepeat,
   forWrite,
   kindOf,
   NOT_CREATED,
   planBuilt,
   planUpdate,
   refuse,
+  refuseRuled,
   walkOf,
   withoutOwnFlags
 } from "./write-checks.mjs";
@@ -35,10 +37,6 @@ import { changedInStorage, runSteps } from "./write-steps.mjs";
 function refuseUnwritten(documentName, where = "") {
   const { unwritten } = rulesOf(documentName);
   if (unwritten) throw refuse(unwritten, where);
-}
-
-function refuseRuled(sentence, where = "") {
-  if (sentence) throw refuse(sentence, where);
 }
 
 /**
@@ -195,15 +193,13 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
 export async function planChanges({ documents: entries }) {
   const plans = [];
   for (const [index, entry] of entries.entries()) plans.push(await planChange(entry, `documents[${index}]: `));
-  const places = new Map();
-  for (const [index, { document }] of plans.entries()) {
-    const first = places.get(document.uuid);
-    if (first !== undefined) {
-      throw refuse(
-        `documents[${first}] and documents[${index}] are the same document, ${document.uuid}. Give it once, with all its changes.`
-      );
-    }
-    places.set(document.uuid, index);
+  const repeat = firstRepeat(
+    plans.map(({ document }, index) => ({ key: document.uuid, where: `documents[${index}]` }))
+  );
+  if (repeat) {
+    throw refuse(
+      `${repeat.first} and ${repeat.second} are the same document, ${repeat.key}. Give it once, with all its changes.`
+    );
   }
   return plans;
 }

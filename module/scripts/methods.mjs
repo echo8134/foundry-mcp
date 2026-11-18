@@ -26,7 +26,7 @@ import {
 } from "./scene-data.mjs";
 import { drawLights, drawRegions, drawTokens, drawWalls } from "./scene-drawing.mjs";
 import { getSchema } from "./schema-methods.mjs";
-import { FLAG_SCOPE, isManaged, isOnLevel, replacedBySync, sameLevelSet } from "./scope.mjs";
+import { FLAG_SCOPE, isManaged, isOnLevel, ownedEntries, replacedBySync } from "./scope.mjs";
 import { storedTokenData, tokenFields } from "./token-data.mjs";
 import { deleteTokens, placeTokens, preparePlacement, prepareUpdate, updateTokens } from "./token-methods.mjs";
 import { classifyWall, wallFields } from "./wall-kinds.mjs";
@@ -288,14 +288,7 @@ const checkWallRequest = (scene, { levels = [] }) => checkLevels(scene, levels);
 function checkLightRequest(scene, request) {
   const { levels = [], lights } = request;
   checkLevels(scene, levels);
-  const sceneLevels = sceneLevelIds(scene);
-  const owned = lights.filter((light) => light.levels === undefined || sameLevelSet(light.levels, levels, sceneLevels));
-  if (lights.length > 0 && owned.length === 0) {
-    throw new MethodError(
-      "invalid_params",
-      `All ${lights.length} given lights were left out, so nothing was changed. Each one's own levels are another level set than this call's (${levels.length > 0 ? levels.join(", ") : "none, which means all levels"}), and the entries with managed: false were left out before that. Pass the levels of these lights as the call's levels, or pass lights: [] to remove the bridge-made lights.`
-    );
-  }
+  const owned = ownedEntries(lights, levels, sceneLevelIds(scene), "lights").map(({ entry }) => entry);
   checkAnimations(owned);
   return { ...request, lights: owned };
 }

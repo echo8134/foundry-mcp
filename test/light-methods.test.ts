@@ -455,7 +455,7 @@ describe("sync_lights and what get_scene returns", () => {
     );
   });
 
-  it("accepts the read-only keys of a get_scene light, drops id and managed, and sends the light's own levels on", () => {
+  it("accepts the read-only keys of a get_scene light, drops id, and sends on its own levels and that it is hand-placed", () => {
     const parsed = TOOLS.sync_lights.input.parse({
       levels: ["lvl2"],
       lights: [
@@ -463,7 +463,10 @@ describe("sync_lights and what get_scene returns", () => {
         { id: "light2", managed: false, levels: [], at: [2, 2] }
       ]
     });
-    assert.deepEqual(parsed, { levels: ["lvl2"], lights: [{ levels: ["lvl2"], at: [1, 1], dim: 5 }] });
+    assert.deepEqual(parsed, {
+      levels: ["lvl2"],
+      lights: [{ levels: ["lvl2"], at: [1, 1], dim: 5 }, { managed: false }]
+    });
   });
 });
 
@@ -552,31 +555,28 @@ describe("the level rule of sync_lights, one for the server's input and the modu
     const hand = { ...at(50), managed: false };
     const lvl2 = { ...at(60), levels: ["lvl2"] };
 
-    it("when the server left every light out as hand-placed", async () => {
-      const { scene, positions, before, world, log } = await seed();
-      assert.throws(
-        () => TOOLS.sync_lights.input.parse({ sceneId: scene.id, lights: [hand, hand] }),
-        /left out as hand-placed.*nothing was changed/
-      );
-      assert.deepEqual([positions(), world.log], [before, log]);
-    });
+    for (const [why, lights] of [
+      ["every light was hand-placed", [hand, hand]],
+      ["every light was on another level set", [lvl2, lvl2]],
+      ["some were hand-placed and the rest on another level set", [hand, lvl2]]
+    ] as const) {
+      it(`when ${why}`, async () => {
+        const { scene, positions, before, world, log } = await seed();
+        await assert.rejects(
+          viaTool({ sceneId: scene.id, lights }),
+          refused(
+            /^All 2 given lights were left out: each is marked managed: false, .*or has levels of its own that are another level set than this call's \(none, which means all levels\)\. .*lights: \[\] to remove the bridge-made lights of this level set\. Nothing was written\.$/
+          )
+        );
+        assert.deepEqual([positions(), world.log], [before, log]);
+      });
+    }
 
-    it("when the module left every light out as another level set", async () => {
-      const { scene, positions, before, world, log } = await seed();
-      await assert.rejects(
-        viaTool({ sceneId: scene.id, lights: [lvl2] }),
-        refused(/All 1 given lights were left out, so nothing was changed.*lights: \[\]/)
-      );
-      assert.deepEqual([positions(), world.log], [before, log]);
-    });
-
-    it("when the server left some out as hand-placed and the module the rest", async () => {
-      const { scene, positions, before, world, log } = await seed();
-      await assert.rejects(
-        viaTool({ sceneId: scene.id, lights: [hand, lvl2] }),
-        refused(/All 1 given lights were left out, so nothing was changed/)
-      );
-      assert.deepEqual([positions(), world.log], [before, log]);
+    it("and a hand-placed light that the light schema would refuse is left out unchecked beside one that is written", async () => {
+      const { scene, positions } = await seed();
+      const result = await viaTool({ sceneId: scene.id, lights: [{ managed: false, at: "nowhere" }, at(70)] });
+      assert.deepEqual([result.deleted, result.created], [2, 1]);
+      assert.ok(positions().includes(70));
     });
   });
 
