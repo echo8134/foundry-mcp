@@ -2,6 +2,7 @@
 // it, where a new one may go, and which compendium lock stands in the way of a write.
 
 import { DOCUMENT_TYPES } from "./document-types.mjs";
+import { embeddedNamesOf } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import { classChain } from "./schema.mjs";
 import { refuse } from "./write-checks.mjs";
@@ -30,10 +31,12 @@ export function systemTypes(documentName) {
   return game.documentTypes[documentName].filter((type) => type !== "base" || baseTypeAllowed === true);
 }
 
+/** What every tool says of a type that is none of the document's, or of a table that is none of the system's. */
+export const unknownType = (noun, type, types) =>
+  `Unknown ${noun} ${JSON.stringify(type)}. Use one of: ${types.join(", ")}.`;
+
 export function checkType(types, type, noun) {
-  if (!types.includes(type)) {
-    throw new MethodError("invalid_params", `Unknown ${noun} "${type}". Use one of: ${types.join(", ")}.`);
-  }
+  if (!types.includes(type)) throw new MethodError("invalid_params", unknownType(noun, type, types));
 }
 
 export const hasField = (cls, name) => Object.hasOwn(fieldsOf(cls), name);
@@ -50,17 +53,8 @@ export function subtypesOf(cls) {
   return systemTypes(cls.documentName);
 }
 
-/** The type Foundry gives a new document that names none: the initial value of its type field, where it has one. */
-export function initialTypeOf(cls) {
-  const { initial } = fieldsOf(cls).type;
-  return typeof initial === "string" ? initial : undefined;
-}
-
 /** Folders hold documents of these types (common/constants.mjs:542-543), in the world and inside a compendium pack. */
 export const hasFolders = (type) => CONST.FOLDER_DOCUMENT_TYPES.includes(type);
-
-/** The document names a class embeds, as its metadata lists them (common/abstract/document.mjs:131). */
-const embeddedNamesOf = (cls) => Object.keys(cls.metadata.embedded ?? {});
 
 /** The document types whose documents hold documents of the given type. */
 const holdersOf = (type) =>

@@ -10,10 +10,11 @@ import {
   resolveDocument,
   shortEntry,
   subtypesOf,
-  targetOf
+  targetOf,
+  unknownType
 } from "./document-access.mjs";
 import { withoutSecrets } from "./document-rules.mjs";
-import { embeddedFieldsOf } from "./embedded.mjs";
+import { embeddedFieldsOf, embeddedNamesOf } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { isManaged } from "./scope.mjs";
@@ -106,9 +107,7 @@ function checkFilters(cls, { folder, name, subtype }, folders, types) {
   if (subtype !== undefined && types === null) {
     throw noMatch(`${type} documents have no types. Leave subtype out.`);
   }
-  if (subtype !== undefined && !types.includes(subtype)) {
-    throw noMatch(`Unknown ${type} type "${subtype}". Use one of: ${types.join(", ")}.`);
-  }
+  if (subtype !== undefined && !types.includes(subtype)) throw noMatch(unknownType(`${type} type`, subtype, types));
 }
 
 export async function listDocuments(request) {
@@ -175,7 +174,7 @@ function storedForWrite(document) {
 function embeddedLists(document) {
   const lists = {};
   const totals = {};
-  for (const name of Object.keys(classOf(document.documentName).metadata.embedded ?? {})) {
+  for (const name of embeddedNamesOf(classOf(document.documentName))) {
     const all = Array.from(document.getEmbeddedCollection(name).values());
     lists[name] = all.slice(0, MAX_LISTED).map(shortEntry);
     if (all.length > MAX_LISTED) totals[name] = all.length;

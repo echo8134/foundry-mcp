@@ -12,24 +12,30 @@ import { isPlainObject } from "./data-diff.mjs";
 export const embeddedFieldsOf = (cls) =>
   Object.entries(cls.hierarchy).map(([field, { model }]) => ({ field, cls: model }));
 
+/** The document names a class embeds. */
+export const embeddedNamesOf = (cls) => embeddedFieldsOf(cls).map(({ cls: inner }) => inner.documentName);
+
 /**
  * Applies `change` to the data of a document, and to the data of each embedded document given inside it, down through
  * their own embedded documents. `path` names where the data lies, and ends in a dot below the top.
  * @param {Record<string, any>} data
  * @param {any} cls
  * @param {(data: Record<string, any>, cls: any, path: string) => Record<string, any>} change gets a shallow copy
+ * @param {(documents: unknown[]) => unknown} [collection] what each list of embedded documents becomes
  * @returns {Record<string, any>}
  */
-export function mapGiven(data, cls, change, path = "") {
+export function mapGiven(data, cls, change, collection = (documents) => documents, path = "") {
   const changed = change({ ...data }, cls, path);
   for (const { field, cls: inner } of embeddedFieldsOf(cls)) {
     const given = changed[field];
     if (Array.isArray(given)) {
-      changed[field] = given.map((child, index) =>
-        isPlainObject(child) ? mapGiven(child, inner, change, `${path}${field}.${index}.`) : child
+      changed[field] = collection(
+        given.map((child, index) =>
+          isPlainObject(child) ? mapGiven(child, inner, change, collection, `${path}${field}.${index}.`) : child
+        )
       );
     } else if (isPlainObject(given)) {
-      changed[field] = mapGiven(given, inner, change, `${path}${field}.`);
+      changed[field] = mapGiven(given, inner, change, collection, `${path}${field}.`);
     }
   }
   return changed;
@@ -44,16 +50,12 @@ export function mapGiven(data, cls, change, path = "") {
  * @param {any} cls
  * @returns {any}
  */
-export function byPosition(data, cls) {
-  if (!isPlainObject(data)) return data;
-  const keyed = { ...data };
-  for (const { field, cls: inner } of embeddedFieldsOf(cls)) {
-    const value = keyed[field];
-    if (Array.isArray(value)) {
-      keyed[field] = Object.fromEntries(value.map((child, index) => [index, byPosition(child, inner)]));
-    } else if (isPlainObject(value)) {
-      keyed[field] = byPosition(value, inner);
-    }
-  }
-  return keyed;
-}
+export const byPosition = (data, cls) =>
+  isPlainObject(data)
+    ? mapGiven(
+        data,
+        cls,
+        (given) => given,
+        (documents) => ({ ...documents })
+      )
+    : data;

@@ -7,18 +7,18 @@ import {
   classOf,
   findDocument,
   hasField,
-  initialTypeOf,
   packOf,
   refuseLocked,
   resolveDocument,
   shortEntry,
   subtypesOf,
-  targetOf
+  targetOf,
+  unknownType
 } from "./document-access.mjs";
 import { rulesOf, secretsGiven } from "./document-rules.mjs";
 import { byPosition, embeddedFieldsOf, mapGiven } from "./embedded.mjs";
 import { MethodError } from "./errors.mjs";
-import { documentsWithin } from "./field-check.mjs";
+import { documentsWithin, initialTypeOf } from "./field-check.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
   changedInStorage,
@@ -83,16 +83,14 @@ function typeOfNew(cls, asked, where) {
   const types = subtypesOf(cls);
   if (types === null) return undefined;
   const name = cls.documentName;
-  const type = asked.type ?? initialTypeOf(cls);
+  const type = asked.type ?? initialTypeOf(cls.schema);
   if (type === undefined) {
     throw refuse(
       `A new ${name} needs a type, one of ${types.join(", ")}. get_schema with document ${name} lists the fields of each.`,
       where
     );
   }
-  if (!types.includes(type)) {
-    throw refuse(`Unknown ${name} type ${JSON.stringify(type)}. Use one of: ${types.join(", ")}.`, where);
-  }
+  if (!types.includes(type)) throw refuse(unknownType(`${name} type`, type, types), where);
   return type;
 }
 

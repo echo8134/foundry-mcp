@@ -8,9 +8,9 @@
 // token, so its entries can be removed there, and one that is deleted for a token leaves a tombstone with it.
 
 import { dropAt, entriesToRemove, giveElementIds, updateFor, writeOutcome } from "./data-diff.mjs";
-import { systemTypes } from "./document-access.mjs";
+import { systemTypes, unknownType } from "./document-access.mjs";
 import { MethodError } from "./errors.mjs";
-import { elementIdArrays } from "./field-check.mjs";
+import { elementIdArrays, initialTypeOf } from "./field-check.mjs";
 import { asStoredEntries, withEntryId } from "./item-data.mjs";
 import { idFor } from "./labels.mjs";
 import { claimNamed, FLAG_SCOPE } from "./scope.mjs";
@@ -136,8 +136,8 @@ async function planEffectCreation(parent, id, given, where) {
   const kind = KINDS.ActiveEffect;
   if (given.name === undefined) throw refuse("A new effect needs a name.", at);
   const types = systemTypes("ActiveEffect");
-  const type = given.type ?? "base";
-  if (!types.includes(type)) throw refuse(`Unknown effect type "${type}". Use one of: ${types.join(", ")}.`, at);
+  const type = given.type ?? initialTypeOf(schemaOf(kind));
+  if (!types.includes(type)) throw refuse(unknownType("effect type", type, types), at);
   const asked = withElementIds(kind, given, {}, type);
   checkAsked(kind, asked, { type, where: at });
   const data = { ...structuredClone(asked), _id: id, flags: { ...asked.flags, [FLAG_SCOPE]: { managed: true } } };
@@ -303,9 +303,7 @@ async function planItem(actor, entry, where) {
     throw refuse("An entry without id needs a name and a type, or from: the UUID of an item to copy.", at);
   }
   const types = systemTypes("Item");
-  if (!types.includes(itemType)) {
-    throw refuse(`Unknown item type "${itemType}". Use one of: ${types.join(", ")}.`, at);
-  }
+  if (!types.includes(itemType)) throw refuse(unknownType("item type", itemType, types), at);
   const named = actor.items.filter((item) => item.name === name && item.type === itemType && !isSpellCopy(item));
   const claim = claimNamed(named);
   if (claim.kind === "one") return planItemChange(claim.document, entry, where);

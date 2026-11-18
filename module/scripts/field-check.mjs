@@ -84,9 +84,19 @@ const isTypeData = (field) =>
   field !== null && typeof field === "object" && classChain(field).includes("TypeDataField");
 
 /**
+ * The type Foundry gives a new document that names none: the initial value of the `type` field of its class, where
+ * that has one (common/data/fields.mjs:4285-4310).
+ * @param {any} schema the schema of a document class
+ * @returns {string | undefined}
+ */
+export function initialTypeOf(schema) {
+  const initial = schema?.fields?.type?.initial;
+  return typeof initial === "string" ? initial : undefined;
+}
+
+/**
  * The walk that goes on in the data of one document given inside another, or null where there is nothing to walk. Its
- * type is the one the data gives, or else the one Foundry would fill in: the initial value of the `type` field of its
- * class (common/data/fields.mjs:4285-4310).
+ * type is the one the data gives, or else the one Foundry would fill in.
  * @param {any} schema the schema of the class of that document
  * @param {unknown} documentName
  * @param {unknown} value
@@ -101,8 +111,7 @@ function embeddedWalk(schema, documentName, value, path, walk) {
   }
   if (!isPlainObject(value)) return null;
   walk.documents.push({ documentName, path, data: value });
-  const initial = schema.fields?.type?.initial;
-  const type = typeof value.type === "string" ? value.type : typeof initial === "string" ? initial : undefined;
+  const type = typeof value.type === "string" ? value.type : initialTypeOf(schema);
   return { ...walk, type, heldType: undefined, inEmbedded: true };
 }
 
