@@ -61,13 +61,24 @@ function codeOf(type) {
   return Object.hasOwn(RUNS_CODE, stored) ? stored : null;
 }
 
+/**
+ * Whether a stored UUID names the macro. A UUID field stores the text as given (common/data/fields.mjs:3530-3539),
+ * and Foundry also finds a macro by a compendium UUID without its type or one that a pack redirect rewrites
+ * (common/utils/helpers.mjs:1322-1346), so the text is compared by the macro it names.
+ */
+function namesMacro(uuid, macro) {
+  const named = foundry.utils.parseUuid(uuid);
+  const collection = macro.pack ? game.packs.get(macro.pack) : game.collections.get("Macro");
+  return named?.embedded.length === 0 && named.documentId === macro.id && named.collection === collection;
+}
+
 /** The region behaviors of the world's scenes that run the macro (client/data/region-behaviors/execute-macro.mjs:34). */
 const behaviorsRunning = (macro) =>
   game.scenes
     .map((scene) =>
       scene.regions.map((region) =>
         region.behaviors.filter(
-          (behavior) => behavior.type === "executeMacro" && behavior._source.system?.uuid === macro.uuid
+          (behavior) => behavior.type === "executeMacro" && namesMacro(behavior._source.system?.uuid, macro)
         )
       )
     )

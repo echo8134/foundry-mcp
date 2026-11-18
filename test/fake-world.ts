@@ -778,6 +778,26 @@ export function fakeWorld(options: WorldOptions = {}) {
     return resolve(parts) ?? (await documents.resolve(parts)) ?? null;
   }
 
+  /**
+   * The parts of parseUuid (common/utils/helpers.mjs:1305-1371) the tools read, for a primary document and its
+   * embedded ones: a compendium UUID without the document type takes the pack's type, as a legacy UUID does there.
+   */
+  function parseUuid(uuid: unknown) {
+    if (typeof uuid !== "string") return null;
+    const parts = uuid.split(".");
+    let collection: unknown;
+    if (parts[0] === "Compendium") {
+      const pack = documents.packs.get(`${parts[1]}.${parts[2]}`);
+      if (pack && parts[3] !== pack.documentName) parts.splice(3, 0, pack.documentName);
+      collection = pack;
+      parts.splice(0, 3);
+    } else {
+      collection = globals.game.collections.get(parts[0]);
+    }
+    const [, documentId, ...embedded] = parts;
+    return embedded.length % 2 ? null : { collection, documentId, embedded };
+  }
+
   /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
   class FakeToken {
     static documentName = "Token";
@@ -843,6 +863,7 @@ export function fakeWorld(options: WorldOptions = {}) {
     globals.foundry = {
       utils: {
         fromUuid,
+        parseUuid,
         mergeObject: merge,
         // Stands in for randomID (common/utils/helpers.mjs:1259): a valid document id, another one on each call.
         randomID: () => `random${String(++counter).padStart(10, "0")}`,

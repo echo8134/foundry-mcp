@@ -274,4 +274,19 @@ describe("code that Foundry runs by itself", () => {
       ["Pit trap", "ui.notifications.info('click')", "2"]
     );
   });
+
+  it("knows a compendium macro by a UUID without its type, as Foundry finds it", async () => {
+    world.addPack("world.macros", "Macro", { locked: false });
+    const trap = world.addDocument("Macro", { name: "Trap", type: "script", command: "1" }, { pack: "world.macros" });
+    world.addDocument(
+      "RegionBehavior",
+      { ...MACRO, system: { ...MACRO.system, uuid: `Compendium.world.macros.${trap.id}` } },
+      { parent: region }
+    );
+    await assert.rejects(
+      update({ uuid: trap.uuid, data: { command: "2" } }),
+      refused("invalid_params", /These tools do not change the command of such a macro\./)
+    );
+    assert.deepEqual([trap._source.command, writes(world)], ["1", []]);
+  });
 });
