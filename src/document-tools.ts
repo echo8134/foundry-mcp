@@ -10,9 +10,9 @@ const documentType = z.enum(DOCUMENT_TYPES);
 const documentData = z.record(z.string(), z.unknown());
 
 const SPECIAL_TOOLS =
-  "For an Actor, a Token, a Wall, an AmbientLight and a Scene the tools made for them do more and are the better " +
-  "choice: ensure_actor and delete_actors, place_tokens, update_tokens and delete_tokens, sync_walls, create_walls " +
-  "and delete_walls, sync_lights, ensure_scene.";
+  "For an Actor, a Token, a Wall, an AmbientLight, a Region and a Scene the tools made for them do more and are the " +
+  "better choice: ensure_actor and delete_actors, place_tokens, update_tokens and delete_tokens, sync_walls, " +
+  "create_walls and delete_walls, sync_lights, sync_regions, ensure_scene.";
 
 const HIGH_STAKES =
   "Some writes reach past the document. A User is an account: the join page of a Foundry server can be reached by " +

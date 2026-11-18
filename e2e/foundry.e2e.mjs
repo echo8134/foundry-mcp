@@ -2715,6 +2715,509 @@ try {
       .catch((e) => console.log(`cleanup: generic documents delete failed: ${e.message}`));
   }
 
+  // A scene of three levels, joined by a stair that lines up and by one that does not. Its two upper levels show a
+  // texture made here: 200 x 100 pixels, the left half green and the right half orange.
+  const HALVES = "foundryMcpE2eHalves";
+  const GREEN = [0, 128, 0];
+  const ORANGE = [255, 128, 0];
+  const LEVEL_COLOR = [32, 64, 96];
+  const near = (pixel, colour, tolerance = 40) => pixel.every((value, i) => Math.abs(value - colour[i]) <= tolerance);
+  const isWallRed = ([r, g, b]) => r > 180 && g < 110 && b < 110;
+  const isLightYellow = ([r, g, b]) => r > 200 && g > 170 && b < 90;
+  // Foundry forgets the textures it holds by name when it draws another scene (client/canvas/board.mjs:1306-1308).
+  const registerTexture = () =>
+    page.evaluate((key) => {
+      const halves = document.createElement("canvas");
+      halves.width = 200;
+      halves.height = 100;
+      const context = halves.getContext("2d");
+      context.fillStyle = "rgb(0, 128, 0)";
+      context.fillRect(0, 0, 100, 100);
+      context.fillStyle = "rgb(255, 128, 0)";
+      context.fillRect(100, 0, 100, 100);
+      canvas.sceneTextures[key] = PIXI.Texture.from(halves);
+    }, HALVES);
+  const levelImage = async (args, points) => {
+    await registerTexture();
+    const { image, frame, background } = imageContent(await tool(client, "get_scene_image", args));
+    const decoded = await decode(image, points);
+    same({ width: decoded.width, height: decoded.height }, frame, "decoded size vs frame");
+    return { pixels: decoded.pixels, background };
+  };
+  const levelSceneName = `foundry-mcp e2e levels ${Date.now()}`;
+  let levelSceneId;
+  try {
+    let ground;
+    let upper;
+    let tower;
+    const box = (x, y, width, height) => ({ type: "rectangle", x, y, width, height });
+    const door = (name, shapes, to) => ({
+      name,
+      color: "#0000ff",
+      shapes,
+      behaviors: [{ type: "teleportToken", system: { destinations: [{ region: to }], choice: true } }]
+    });
+    const stair = {
+      name: "e2e stair",
+      shapes: [
+        {
+          type: "polygon",
+          points: [
+            [100, 600],
+            [300, 600],
+            [300, 700],
+            [100, 700]
+          ]
+        }
+      ],
+      behaviors: [{ type: "changeLevel" }]
+    };
+    const trapdoor = () =>
+      door("e2e trapdoor", [box(600, 300, 200, 200), { ...box(720, 420, 60, 60), hole: true }], "e2e shaft");
+    const shaft = () => door("e2e shaft", [box(200, 200, 100, 100)], "e2e trapdoor");
+    const pageRegions = () =>
+      page.evaluate(
+        (id) =>
+          game.scenes.get(id).regions.map((region) => ({
+            id: region.id,
+            name: region.name,
+            levels: [...region.levels],
+            managed: region.flags["foundry-mcp"]?.managed === true,
+            shapes: region._source.shapes.length,
+            behaviors: region.behaviors.map((behavior) => ({
+              id: behavior.id,
+              type: behavior.type,
+              managed: behavior.flags["foundry-mcp"]?.managed === true,
+              stored: [...(behavior._source.system.destinations ?? [])],
+              leadsTo: [...(behavior.system.destinations ?? [])].map(
+                (uuid) => fromUuidSync(uuid, { relative: behavior })?.name ?? null
+              )
+            }))
+          })),
+        levelSceneId
+      );
+
+    await check(
+      "a scene gets two more levels through create_documents, and get_scene reports all three in full",
+      async () => {
+        const made = await tool(client, "ensure_scene", {
+          name: levelSceneName,
+          width: 1000,
+          height: 800,
+          padding: 0.25,
+          background: { src: "ui/parchment.jpg" },
+          grid: { type: "square", size: 100, distance: 5, units: "ft" }
+        });
+        levelSceneId = made.id;
+        const sceneUuid = `Scene.${levelSceneId}`;
+        [ground] = (await tool(client, "get_scene", { sceneId: levelSceneId })).levels;
+        same([ground.initial, ground.background.src], [true, "ui/parchment.jpg"], "the level a scene starts with");
+        const texture = { src: `#${HALVES}`, color: "#204060" };
+        const created = await tool(client, "create_documents", {
+          type: "Level",
+          parent: sceneUuid,
+          documents: [
+            {
+              name: "e2e upper",
+              sort: 100,
+              elevation: { bottom: 10, top: 20 },
+              background: texture,
+              textures: { fit: "width", offsetX: 100 }
+            },
+            { name: "e2e tower", sort: 200, elevation: { bottom: 20, top: null }, background: texture }
+          ]
+        });
+        same([created.created, created.documents.map((one) => one.unapplied)], [2, [[], []]], "levels created");
+        const renamed = await tool(client, "update_documents", {
+          documents: [
+            { uuid: `${sceneUuid}.Level.${ground.id}`, data: { name: "e2e ground", elevation: { bottom: 0, top: 10 } } }
+          ]
+        });
+        same(renamed.documents[0].unapplied, [], "the first level renamed");
+
+        const { levels } = await tool(client, "get_scene", { sceneId: levelSceneId });
+        [ground, upper, tower] = ["e2e ground", "e2e upper", "e2e tower"].map((name) =>
+          levels.find((level) => level.name === name)
+        );
+        same(
+          levels.map((level) => [level.name, level.sort, level.initial, level.elevation, level.background]),
+          [
+            [
+              "e2e ground",
+              ground.sort,
+              true,
+              { bottom: 0, top: 10 },
+              { src: "ui/parchment.jpg", color: ground.background.color }
+            ],
+            ["e2e upper", 100, false, { bottom: 10, top: 20 }, { src: `#${HALVES}`, color: "#204060" }],
+            ["e2e tower", 200, false, { bottom: 20, top: null }, { src: `#${HALVES}`, color: "#204060" }]
+          ],
+          "the levels"
+        );
+        const { anchorX, anchorY, offsetX, offsetY, fit, scaleX, scaleY, rotation } = upper.textures;
+        same(
+          [anchorX, anchorY, offsetX, offsetY, fit, scaleX, scaleY, rotation, upper.foreground, upper.visibility],
+          [0.5, 0.5, 100, 0, "width", 1, 1, 0, { src: null }, { levels: [] }],
+          "how the upper level's images are placed"
+        );
+      }
+    );
+
+    await check("sync_walls and sync_lights put walls and lights on single levels", async () => {
+      const wall = (y) => [
+        {
+          points: [
+            [100, y],
+            [400, y]
+          ]
+        }
+      ];
+      for (const [level, y, at] of [
+        [upper, 300, [900, 300]],
+        [ground, 500, [900, 500]]
+      ]) {
+        const walls = await tool(client, "sync_walls", { sceneId: levelSceneId, levels: [level.id], paths: wall(y) });
+        const lights = await tool(client, "sync_lights", {
+          sceneId: levelSceneId,
+          levels: [level.id],
+          lights: [{ at, dim: 5 }]
+        });
+        same([walls.created, lights.created], [1, 1], `walls and lights on ${level.name}`);
+      }
+      const read = await tool(client, "get_scene", { sceneId: levelSceneId });
+      same(
+        [read.walls.map((one) => one.levels), read.lights.map((one) => one.levels)],
+        [
+          [[upper.id], [ground.id]],
+          [[upper.id], [ground.id]]
+        ],
+        "the levels of the walls and lights"
+      );
+    });
+
+    await check(
+      "get_scene_image with level shows that level's map where Foundry places it, and only that level's walls and lights",
+      async () => {
+        // The texture is as wide as the scene (fit width), so 500 high around the middle, and moved 100 to the right:
+        // green from x 100 to 600, orange from there, and the level's colour above y 150, below y 650 and left of x 100.
+        const onUpper = await levelImage({ sceneId: levelSceneId, level: upper.id }, [
+          [0.3, 0.5],
+          [0.55, 0.5],
+          [0.8, 0.5],
+          [0.05, 0.5],
+          [0.5, 0.1],
+          [0.5, 0.9]
+        ]);
+        same(onUpper.background, true, "the upper level has a map");
+        const expected = [GREEN, GREEN, ORANGE, LEVEL_COLOR, LEVEL_COLOR, LEVEL_COLOR];
+        for (const [i, pixel] of onUpper.pixels.entries()) {
+          assert(near(pixel, expected[i]), `upper level, point ${i}: rgb(${pixel}) is not near rgb(${expected[i]})`);
+        }
+        // Without an offset and with the default fit the texture fills the scene rectangle, half and half.
+        const onTower = await levelImage({ sceneId: levelSceneId, level: tower.id }, [
+          [0.45, 0.05],
+          [0.55, 0.95]
+        ]);
+        assert(
+          near(onTower.pixels[0], GREEN) && near(onTower.pixels[1], ORANGE),
+          `tower level: rgb(${onTower.pixels[0]}) and rgb(${onTower.pixels[1]})`
+        );
+
+        const points = [
+          [0.25, 0.375],
+          [0.25, 0.625],
+          [0.9, 0.375],
+          [0.9, 0.625]
+        ];
+        const shown = { sceneId: levelSceneId, showWalls: true, showLights: true };
+        const [upperWall, groundWall, upperLight, groundLight] = (
+          await levelImage({ ...shown, level: upper.id }, points)
+        ).pixels;
+        assert(isWallRed(upperWall), `no wall of the upper level at its place, pixel was rgb(${upperWall})`);
+        assert(near(groundWall, GREEN), `the ground level's wall is drawn on the upper level: rgb(${groundWall})`);
+        assert(isLightYellow(upperLight), `no light of the upper level at its place, pixel was rgb(${upperLight})`);
+        assert(near(groundLight, ORANGE), `the ground level's light is drawn on the upper level: rgb(${groundLight})`);
+        const plain = (await levelImage({ sceneId: levelSceneId, level: ground.id }, points)).pixels;
+        const onGround = (await levelImage({ ...shown, level: ground.id }, points)).pixels;
+        assert(
+          near(onGround[0], plain[0]) &&
+            isWallRed(onGround[1]) &&
+            near(onGround[2], plain[2]) &&
+            isLightYellow(onGround[3]),
+          `the ground level shows other walls or lights than its own: ${JSON.stringify([plain, onGround])}`
+        );
+        const everyLevel = (await levelImage(shown, points)).pixels;
+        assert(
+          isWallRed(everyLevel[0]) && isWallRed(everyLevel[1]) && isLightYellow(everyLevel[2]),
+          `without a level not every wall and light is drawn: ${JSON.stringify(everyLevel)}`
+        );
+      }
+    );
+
+    await check(
+      "sync_regions builds a stair that lines up and a pair of teleport regions that name each other across levels",
+      async () => {
+        const lined = await tool(client, "sync_regions", {
+          sceneId: levelSceneId,
+          levels: [ground.id, upper.id],
+          regions: [stair]
+        });
+        same([lined.created, lined.regions[0].behaviors.map((one) => one.type)], [1, ["changeLevel"]], "the stair");
+
+        const first = await tool(client, "sync_regions", {
+          sceneId: levelSceneId,
+          levels: [upper.id],
+          regions: [trapdoor()]
+        });
+        same(
+          [first.created, first.regions[0].behaviors[0].pending],
+          [1, ["e2e shaft"]],
+          "the trapdoor, whose destination does not exist yet"
+        );
+        const second = await tool(client, "sync_regions", {
+          sceneId: levelSceneId,
+          levels: [tower.id],
+          regions: [shaft()]
+        });
+        same([second.created, second.regions[0].behaviors[0].pending], [1, undefined], "the shaft");
+        const third = await tool(client, "sync_regions", {
+          sceneId: levelSceneId,
+          levels: [upper.id],
+          regions: [trapdoor()]
+        });
+        same(
+          [third.created, third.updated, third.regions[0].id, third.regions[0].behaviors[0].changed],
+          [0, 1, first.regions[0].id, ["system.destinations"]],
+          "the trapdoor again, changed in place"
+        );
+
+        const regions = await pageRegions();
+        const stored = regions.map((region) => region.behaviors.flatMap((behavior) => behavior.stored));
+        console.log(`note: Foundry stores the teleport destinations as ${JSON.stringify(stored)}`);
+        same(
+          regions.map((region) => [
+            region.name,
+            region.levels,
+            region.managed,
+            region.shapes,
+            region.behaviors.map((behavior) => [behavior.type, behavior.managed, behavior.leadsTo])
+          ]),
+          [
+            ["e2e stair", [ground.id, upper.id], true, 1, [["changeLevel", true, []]]],
+            ["e2e trapdoor", [upper.id], true, 2, [["teleportToken", true, ["e2e shaft"]]]],
+            ["e2e shaft", [tower.id], true, 1, [["teleportToken", true, ["e2e trapdoor"]]]]
+          ],
+          "the regions in the page"
+        );
+
+        const read = await tool(client, "get_scene", { sceneId: levelSceneId });
+        const byName = (name) => read.regions.find((region) => region.name === name);
+        same(
+          [
+            byName("e2e trapdoor").behaviors[0].system.destinations,
+            byName("e2e shaft").behaviors[0].system.destinations
+          ],
+          [
+            [`Scene.${levelSceneId}.Region.${byName("e2e shaft").id}`],
+            [`Scene.${levelSceneId}.Region.${byName("e2e trapdoor").id}`]
+          ],
+          "the destinations get_scene reports"
+        );
+        same(
+          [
+            byName("e2e stair").shapes[0].points,
+            byName("e2e trapdoor").shapes.map((shape) => [shape.x, shape.y, shape.hole])
+          ],
+          [
+            [
+              [100, 600],
+              [300, 600],
+              [300, 700],
+              [100, 700]
+            ],
+            [
+              [600, 300, false],
+              [720, 420, true]
+            ]
+          ],
+          "the shapes get_scene reports, in scene pixels"
+        );
+      }
+    );
+
+    await check(
+      "sync_regions run again changes nothing, and neither do the regions of get_scene passed back",
+      async () => {
+        // Every write Foundry stores of a region or a behavior calls one of these hooks, in this browser too.
+        const hooks = ["Region", "RegionBehavior"].flatMap((name) => [
+          `create${name}`,
+          `update${name}`,
+          `delete${name}`
+        ]);
+        await page.evaluate((names) => {
+          globalThis.foundryMcpE2eWrites = [];
+          globalThis.foundryMcpE2eHooks = names.map((name) => [
+            name,
+            Hooks.on(name, (document) => globalThis.foundryMcpE2eWrites.push(`${name} ${document.name}`))
+          ]);
+        }, hooks);
+        const calls = [
+          [[ground.id, upper.id], [stair]],
+          [[upper.id], [trapdoor()]],
+          [[tower.id], [shaft()]]
+        ];
+        for (const [levels, regions] of calls) {
+          const again = await tool(client, "sync_regions", { sceneId: levelSceneId, levels, regions });
+          same(
+            [
+              again.created,
+              again.updated,
+              again.deleted,
+              again.regions.map((region) => [
+                region.changed,
+                region.unapplied,
+                region.behaviors.map((one) => [one.changed, one.unapplied, one.pending])
+              ])
+            ],
+            [0, 0, 0, [[[], [], [[[], [], undefined]]]]],
+            `the second run of ${regions[0].name}`
+          );
+        }
+        const read = await tool(client, "get_scene", { sceneId: levelSceneId });
+        const back = await tool(client, "sync_regions", {
+          sceneId: levelSceneId,
+          levels: [upper.id],
+          regions: read.regions
+        });
+        same(
+          [back.created, back.updated, back.deleted, back.regions.map((region) => region.name)],
+          [0, 0, 0, ["e2e trapdoor"]],
+          "get_scene's regions passed back for the upper level"
+        );
+        const writes = await page.evaluate(() => {
+          for (const [name, id] of globalThis.foundryMcpE2eHooks) Hooks.off(name, id);
+          const seen = globalThis.foundryMcpE2eWrites;
+          delete globalThis.foundryMcpE2eHooks;
+          delete globalThis.foundryMcpE2eWrites;
+          return seen;
+        });
+        same(writes, [], "the writes Foundry stored of regions and behaviors");
+      }
+    );
+
+    await check("a region made by hand survives a sync of its level set, also under the name of an entry", async () => {
+      const byHand = await page.evaluate(
+        async (id, level) => {
+          const [region] = await game.scenes.get(id).createEmbeddedDocuments("Region", [
+            {
+              name: "e2e trapdoor",
+              levels: [level],
+              shapes: [{ type: "rectangle", x: 400, y: 300, width: 50, height: 50 }]
+            }
+          ]);
+          return { id: region.id, source: JSON.stringify(region.toObject()) };
+        },
+        levelSceneId,
+        upper.id
+      );
+      const synced = await tool(client, "sync_regions", {
+        sceneId: levelSceneId,
+        levels: [upper.id],
+        regions: [trapdoor()]
+      });
+      same(
+        [synced.created, synced.updated, synced.deleted, synced.handPlaced],
+        [0, 0, 0, [{ id: byHand.id, name: "e2e trapdoor" }]],
+        "the sync beside a region made by hand"
+      );
+      const emptied = await tool(client, "sync_regions", { sceneId: levelSceneId, levels: [upper.id], regions: [] });
+      same(emptied.deleted, 1, "the bridge-made region of the upper level deleted");
+      same(
+        await page.evaluate(
+          (id, region) => JSON.stringify(game.scenes.get(id).regions.get(region)?.toObject() ?? null),
+          levelSceneId,
+          byHand.id
+        ),
+        byHand.source,
+        "the region made by hand, as it was"
+      );
+      const rebuilt = await tool(client, "sync_regions", {
+        sceneId: levelSceneId,
+        levels: [upper.id],
+        regions: [trapdoor()]
+      });
+      same([rebuilt.created, rebuilt.regions[0].behaviors[0].pending], [1, undefined], "the trapdoor built again");
+      await page.evaluate((id, region) => game.scenes.get(id).regions.get(region).delete(), levelSceneId, byHand.id);
+    });
+
+    await check("get_scene_image draws the regions of one level, with a hole left open", async () => {
+      // The trapdoor is blue over the orange half, from 600,300 to 800,500, with a hole from 720,420 to 780,480.
+      // The third point lies in the shaft of the tower level, off its name.
+      const points = [
+        [0.65, 0.4125],
+        [0.75, 0.5625],
+        [0.22, 0.35]
+      ];
+      const [filled, hole, elsewhere] = (
+        await levelImage({ sceneId: levelSceneId, level: upper.id, showRegions: true }, points)
+      ).pixels;
+      assert(
+        filled[2] > 35 && filled[0] < 235 && filled[0] > 150,
+        `the region's area is not filled lightly in its colour: rgb(${filled})`
+      );
+      assert(near(hole, ORANGE), `the hole is not left open: rgb(${hole})`);
+      assert(near(elsewhere, GREEN), `the shaft of the tower level is drawn on the upper level: rgb(${elsewhere})`);
+      const [, , shaftArea] = (await levelImage({ sceneId: levelSceneId, level: tower.id, showRegions: true }, points))
+        .pixels;
+      assert(shaftArea[2] > 35, `the shaft is not drawn on its own level: rgb(${shaftArea})`);
+    });
+
+    await check(
+      "sync_regions refuses a behavior that runs code and a stair on one level, and writes nothing",
+      async () => {
+        const before = JSON.stringify(await pageRegions());
+        const script = {
+          type: "executeScript",
+          system: { events: ["behaviorActivated"], source: "globalThis.foundryMcpE2eRan = true;" }
+        };
+        await assertRejects(
+          tool(client, "sync_regions", {
+            sceneId: levelSceneId,
+            levels: [tower.id],
+            regions: [shaft(), { name: "e2e trap", shapes: [box(0, 0, 50, 50)], behaviors: [script] }]
+          }),
+          /regions\[1\]\.behaviors\[0\]: These tools create no region behavior of the type executeScript: .*Nothing was written\.$/
+        );
+        await assertRejects(
+          tool(client, "sync_regions", { sceneId: levelSceneId, levels: [tower.id], regions: [shaft(), stair] }),
+          /regions\[1\]\.behaviors\[0\]: A changeLevel behavior offers a token the other levels its region is on/
+        );
+        await assertRejects(
+          tool(client, "sync_regions", {
+            sceneId: levelSceneId,
+            levels: [ground.id, upper.id],
+            regions: [stair, door("e2e wide", [box(0, 0, 50, 50)], "e2e stair")]
+          }),
+          /The destination "e2e stair" is on 2 levels\. Foundry teleports a token only into a region that is on exactly one level/
+        );
+        same(JSON.stringify(await pageRegions()), before, "the regions in the page");
+        same(await page.evaluate(() => globalThis.foundryMcpE2eRan === true), false, "whether the script ran");
+      }
+    );
+  } finally {
+    await page
+      .evaluate(
+        async (id, key) => {
+          await game.scenes.get(id)?.delete();
+          delete canvas.sceneTextures[key];
+          delete globalThis.foundryMcpE2eRan;
+        },
+        levelSceneId ?? null,
+        HALVES
+      )
+      .catch((e) => console.log(`cleanup: level scene delete failed: ${e.message}`));
+  }
+
   await check(
     "with a wrong token in the page the module refuses the server and tool calls fail with no bridge",
     async () => {
