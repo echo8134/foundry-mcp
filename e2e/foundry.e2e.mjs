@@ -2566,6 +2566,15 @@ try {
           }),
           /documents\[0\]: behaviors\.0: These tools create no region behavior of the type executeScript/
         );
+        // Foundry would make a list of this object (common/data/fields.mjs:2471-2484).
+        await assertRejects(
+          tool(client, "create_documents", {
+            type: "Region",
+            parent: ownScene.uuid,
+            documents: [{ name: "e2e trap", behaviors: { 0: script } }]
+          }),
+          /documents\[0\]: Not a list of documents: behaviors\./
+        );
         await assertRejects(
           tool(client, "create_documents", {
             type: "RegionBehavior",
