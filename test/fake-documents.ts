@@ -13,14 +13,17 @@ import {
   DocumentIdField,
   DocumentOwnershipField,
   DocumentTypeField,
+  DocumentUUIDField,
   EmbeddedCollectionField,
   FilePathField,
   ForeignDocumentField,
   HTMLField,
+  JavaScriptField,
   JSONField,
   NumberField,
   ObjectField,
   SchemaField,
+  SetField,
   StringField,
   TypeDataField
 } from "./fake-system.ts";
@@ -66,18 +69,67 @@ type Env = {
   control: Record<string, any>;
   delay: () => Promise<void>;
   nextNumber: () => number;
+  /** The classes of the documents the rest of the fake world makes, which can hold documents of these classes. */
+  hosts: () => Record<string, { metadata: { embedded: Record<string, string> } }>;
 };
+
+/** Which document types a world, a compendium pack and a folder hold (common/constants.mjs:411-442, :542-543). */
+export const DOCUMENT_PLACES = Object.freeze({
+  WORLD_DOCUMENT_TYPES: [
+    "Actor",
+    "Cards",
+    "ChatMessage",
+    "Combat",
+    "FogExploration",
+    "Folder",
+    "Item",
+    "JournalEntry",
+    "Macro",
+    "Playlist",
+    "RollTable",
+    "Scene",
+    "Setting",
+    "User"
+  ],
+  COMPENDIUM_DOCUMENT_TYPES: [
+    "ActiveEffect",
+    "Actor",
+    "Adventure",
+    "Cards",
+    "Item",
+    "JournalEntry",
+    "Macro",
+    "Playlist",
+    "RollTable",
+    "Scene"
+  ],
+  FOLDER_DOCUMENT_TYPES: [
+    "ActiveEffect",
+    "Actor",
+    "Adventure",
+    "Item",
+    "Scene",
+    "JournalEntry",
+    "Playlist",
+    "RollTable",
+    "Cards",
+    "Macro",
+    "Compendium"
+  ]
+});
 
 const folder = () => new ForeignDocumentField({ documentName: "Folder" }, { nullable: true, initial: null });
 const sort = () => new NumberField({ integer: true, initial: 0 });
 const ownership = () => new DocumentOwnershipField({ initial: () => ({ default: 0 }) });
 const named = () => new StringField({ required: true, blank: false });
 const id = () => new DocumentIdField({ nullable: true, initial: null });
+const events = () => new SetField(new StringField());
 
 /**
  * The fields of Foundry's own documents that the tests use, with their kinds and initial values
  * (common/documents/journal-entry.mjs, journal-entry-page.mjs:44-75, journal-entry-category.mjs, playlist.mjs,
- * playlist-sound.mjs, chat-message.mjs:40-66, user.mjs:48-68, setting.mjs:39-49, macro.mjs, folder.mjs).
+ * playlist-sound.mjs, chat-message.mjs:40-66, user.mjs:48-68, setting.mjs:39-49, macro.mjs, folder.mjs, region.mjs:48-90,
+ * region-behavior.mjs:42-52).
  */
 const DEFINITIONS: Definition[] = [
   {
@@ -210,19 +262,8 @@ const DEFINITIONS: Definition[] = [
       color: new ColorField({ nullable: true, initial: null }),
       flags: new DocumentFlagsField()
     },
-    // CONST.FOLDER_DOCUMENT_TYPES, the core types of a folder (common/documents/folder.mjs:29).
-    types: [
-      "Actor",
-      "Adventure",
-      "Item",
-      "Scene",
-      "JournalEntry",
-      "Playlist",
-      "RollTable",
-      "Cards",
-      "Macro",
-      "Compendium"
-    ]
+    // The core types of a folder are the document types folders hold (common/documents/folder.mjs:29).
+    types: [...DOCUMENT_PLACES.FOLDER_DOCUMENT_TYPES]
   },
   // Exists only in a compendium pack (common/constants.mjs:411-442).
   {
@@ -234,6 +275,37 @@ const DEFINITIONS: Definition[] = [
   {
     name: "ActorDelta",
     fields: { _id: id(), name: new StringField({ nullable: true, initial: null }), flags: new DocumentFlagsField() }
+  },
+  // Lies in a scene, and holds the behaviors that answer what happens in it.
+  {
+    name: "Region",
+    fields: { _id: id(), name: named(), hidden: new BooleanField({ initial: false }), flags: new DocumentFlagsField() },
+    embedded: { RegionBehavior: "behaviors" }
+  },
+  {
+    name: "RegionBehavior",
+    fields: {
+      _id: id(),
+      name: new StringField({ initial: "" }),
+      type: new DocumentTypeField(),
+      system: new TypeDataField({ documentName: "RegionBehavior" }),
+      disabled: new BooleanField({ initial: false }),
+      flags: new DocumentFlagsField()
+    },
+    // Three of Foundry's own types (common/documents/region-behavior.mjs:30), with the fields of their data models
+    // (client/data/region-behaviors/execute-script.mjs:22-27, execute-macro.mjs:21-27, pause-game.mjs:22-26).
+    types: ["executeMacro", "executeScript", "pauseGame"],
+    models: {
+      executeScript: { schema: new SchemaField({ events: events(), source: new JavaScriptField({ initial: "" }) }) },
+      executeMacro: {
+        schema: new SchemaField({
+          events: events(),
+          uuid: new DocumentUUIDField({ nullable: true, initial: null }),
+          everyone: new BooleanField({ initial: false })
+        })
+      },
+      pauseGame: { schema: new SchemaField({ once: new BooleanField({ initial: false }) }) }
+    }
   }
 ];
 
@@ -263,6 +335,21 @@ export function fakeDocuments(env: Env) {
   const packs = new Collection<any>();
 
   const newId = (name: string) => `${name.slice(0, 6).toLowerCase()}${String(env.nextNumber()).padStart(10, "0")}`;
+
+  /** The field of a parent that stores its embedded documents of a name (metadata.embedded). */
+  const fieldIn = (parent: any, name: string): string | undefined =>
+    (classes[parent.documentName] ?? env.hosts()[parent.documentName])?.metadata.embedded[name];
+
+  /** The embedded documents of a parent from their stored records. A document stays the same object while its record is there. */
+  const madeFrom = new WeakMap<Source, any>();
+  function childrenOf(parent: any, child: string, records: Source[]) {
+    return new Collection<any>(
+      records.map((record) => {
+        if (!madeFrom.has(record)) madeFrom.set(record, new classes[child](record, { parent, clean: false }));
+        return [record._id, madeFrom.get(record)];
+      })
+    );
+  }
 
   /** The fields of a document of a type: its own, with `system` as the data model of the type has it. */
   function fieldsFor(definition: Definition, type: string | undefined) {
@@ -347,7 +434,6 @@ export function fakeDocuments(env: Env) {
       readonly _source: Source;
       readonly parent: any;
       readonly pack: string | null;
-      readonly #children = new Map<string, Map<string, any>>();
 
       /** As Foundry's class: the object it is given becomes its stored data, cleaned in place unless told not to. */
       constructor(data: Source, context: { parent?: any; pack?: string | null; clean?: boolean } = {}) {
@@ -375,24 +461,10 @@ export function fakeDocuments(env: Env) {
         return structuredClone(this._source);
       }
 
-      /** The embedded documents of one field. A document stays the same object while its record is there. */
-      #collection(child: string, field: string) {
-        if (!this.#children.has(field)) this.#children.set(field, new Map());
-        const made = this.#children.get(field)!;
-        return new Collection<any>(
-          this._source[field].map((record: Source) => {
-            if (made.get(record._id)?._source !== record) {
-              made.set(record._id, new classes[child](record, { parent: this, clean: false }));
-            }
-            return [record._id, made.get(record._id)];
-          })
-        );
-      }
-
       getEmbeddedCollection(child: string) {
         const field = embedded[child];
         if (!field) throw new Error(`${child} is not a valid embedded Document within the ${name} Document`);
-        return this.#collection(child, field);
+        return childrenOf(this, child, this._source[field]);
       }
 
       /**
@@ -506,7 +578,7 @@ export function fakeDocuments(env: Env) {
           .filter((document) => !control.vetoDocumentDelete?.(document));
         for (const document of deleted) {
           if (parent) {
-            const records: Source[] = parent._source[parent.constructor.metadata.embedded[name]];
+            const records: Source[] = parent._source[fieldIn(parent, name)!];
             records.splice(records.indexOf(document._source), 1);
           } else collection.delete(document.id);
         }
@@ -543,7 +615,7 @@ export function fakeDocuments(env: Env) {
 
   function store(name: string, source: Source, parent: any, pack: string | null) {
     if (parent) {
-      parent._source[parent.constructor.metadata.embedded[name]].push(source);
+      parent._source[fieldIn(parent, name)!].push(source);
       return parent.getEmbeddedCollection(name).get(source._id);
     }
     const document = new classes[name](source, { pack, clean: false });
@@ -675,6 +747,8 @@ export function fakeDocuments(env: Env) {
     addDocument,
     addPackFolder,
     makeFolder,
+    childrenOf,
+    within,
     resolve
   };
 }

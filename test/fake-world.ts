@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { Collection, type EmbeddedWrite, fakeActors } from "./fake-actors.ts";
-import { type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
+import { DOCUMENT_PLACES, type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
 import { fakeDocument } from "./fake-dom.ts";
 import { applyChanges, cleanValue, cloneChanges, ForcedDeletion, merge, validationErrors } from "./fake-model.ts";
-import { systemConfig } from "./fake-system.ts";
+import { sceneSchema, systemConfig } from "./fake-system.ts";
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -59,51 +59,6 @@ const cleanInteger = (value: number) => {
 };
 
 const USER_ID = "user1";
-
-/** Which document types a world, a compendium pack and a folder hold (common/constants.mjs:411-442, :542-543). */
-const DOCUMENT_PLACES = Object.freeze({
-  WORLD_DOCUMENT_TYPES: [
-    "Actor",
-    "Cards",
-    "ChatMessage",
-    "Combat",
-    "FogExploration",
-    "Folder",
-    "Item",
-    "JournalEntry",
-    "Macro",
-    "Playlist",
-    "RollTable",
-    "Scene",
-    "Setting",
-    "User"
-  ],
-  COMPENDIUM_DOCUMENT_TYPES: [
-    "ActiveEffect",
-    "Actor",
-    "Adventure",
-    "Cards",
-    "Item",
-    "JournalEntry",
-    "Macro",
-    "Playlist",
-    "RollTable",
-    "Scene"
-  ],
-  FOLDER_DOCUMENT_TYPES: [
-    "ActiveEffect",
-    "Actor",
-    "Adventure",
-    "Item",
-    "Scene",
-    "JournalEntry",
-    "Playlist",
-    "RollTable",
-    "Cards",
-    "Macro",
-    "Compendium"
-  ]
-});
 
 const DOCUMENT_TYPES = Object.freeze({
   Actor: ["base", "character", "npc", "vehicle", "group"],
@@ -205,6 +160,7 @@ export function fakeWorld(options: WorldOptions = {}) {
   const delay = () => pause(options.latency ?? 0);
   const system = systemConfig();
   const tokenFields = system.Token.documentClass.schema;
+  const sceneFields = sceneSchema();
   let counter = 0;
 
   /** The wall's c is an array of integer NumberFields (common/documents/wall.mjs:54), and levels defaults to [] (SceneLevelsSetField). */
@@ -289,7 +245,14 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   const globals = globalThis as Record<string, any>;
-  const documents = fakeDocuments({ folders, log, control, delay, nextNumber: () => ++counter });
+  const documents = fakeDocuments({
+    folders,
+    log,
+    control,
+    delay,
+    nextNumber: () => ++counter,
+    hosts: () => ({ Scene: FakeScene })
+  });
   let makeTokenLater: (data: Record<string, any>, scene: any, id: string | null) => any;
   const {
     actors,
@@ -343,11 +306,15 @@ export function fakeWorld(options: WorldOptions = {}) {
       height: (data.height ?? token.height) * scene.grid.size
     });
     const token: any = {
+      documentName: "Token",
       _source: source,
       parent: scene,
       prepared,
       get id() {
         return source._id;
+      },
+      get uuid() {
+        return `${scene.uuid}.Token.${source._id}`;
       },
       get actor() {
         const base = actors.get(source.actorId);
@@ -465,7 +432,8 @@ export function fakeWorld(options: WorldOptions = {}) {
         grid: { type: 1, size: 100, distance: 5, units: "ft" },
         fog: { mode: 1 },
         flags: {},
-        environment: { darknessLevel: 0, globalLight: { enabled: false } }
+        environment: { darknessLevel: 0, globalLight: { enabled: false } },
+        regions: []
       },
       stored(data)
     );
@@ -519,12 +487,42 @@ export function fakeWorld(options: WorldOptions = {}) {
     const scene: any = {
       id,
       uuid: `Scene.${id}`,
+      documentName: "Scene",
+      parent: null,
+      pack: null,
       _source: source,
       initialLevel: level,
       levels,
       walls,
       lights,
       tokens,
+      /** The regions are documents of the generic classes, stored as records in the scene's own data. */
+      get regions() {
+        return documents.childrenOf(scene, "Region", source.regions);
+      },
+      getEmbeddedCollection(name: string) {
+        if (name === "Region") return scene.regions;
+        const held: Record<string, Collection<any>> = {
+          AmbientLight: lights,
+          Level: levels,
+          Token: tokens,
+          Wall: walls
+        };
+        if (!held[name]) throw new Error(`${name} is not a valid embedded Document within the Scene Document`);
+        return held[name];
+      },
+      toObject: () => structuredClone(source),
+      /**
+       * validate with changes is a dry run of an update (common/abstract/data.mjs:575-597): it cleans the changes, the
+       * given object itself when clean.copy is false, and throws what the update would refuse unless it is not strict.
+       */
+      validate({ changes, clean, strict = true }: { changes: any; clean?: { copy?: boolean }; strict?: boolean }) {
+        const target = clean?.copy === false ? changes : cloneChanges(changes);
+        const cleaned = cleanValue(sceneFields, target, { partial: true, source }) as Record<string, any>;
+        const errors = validationErrors(sceneFields, applyChanges(structuredClone(source), cleaned));
+        if (errors.length > 0 && strict) throw new Error(`Scene validation errors: ${errors.join("; ")}`);
+        return errors.length === 0;
+      },
       get dimensions() {
         return dimensionsOf(source);
       },
@@ -604,6 +602,7 @@ export function fakeWorld(options: WorldOptions = {}) {
           }
         }
         merge(source, changed);
+        return scene;
       },
       async updateEmbeddedDocuments(name: string, updates: any[]) {
         assert.ok(name === "Level" || name === "Token", name);
@@ -729,8 +728,16 @@ export function fakeWorld(options: WorldOptions = {}) {
    * (client/documents/scene.mjs:443), so a type that is not a number does that here.
    */
   class FakeScene {
+    static documentName = "Scene";
+    static schema = sceneFields;
     /** The documents a scene embeds, as far as the fake has them (common/documents/scene.mjs:32-42). */
-    static metadata = { embedded: { AmbientLight: "lights", Level: "levels", Token: "tokens", Wall: "walls" } };
+    static metadata = {
+      embedded: { AmbientLight: "lights", Level: "levels", Region: "regions", Token: "tokens", Wall: "walls" }
+    };
+    /** Document.hierarchy: the fields that hold embedded documents (common/abstract/document.mjs:259-266). */
+    static hierarchy = Object.fromEntries(
+      Object.values(FakeScene.metadata.embedded).map((field) => [field, sceneFields.fields[field]])
+    );
     readonly dimensions: ReturnType<typeof dimensionsOf> | undefined;
     readonly shiftX: number | null;
     readonly shiftY: number | null;
@@ -759,8 +766,9 @@ export function fakeWorld(options: WorldOptions = {}) {
     const parts = uuid.split(".");
     if (parts[0] === "Broken") throw new TypeError(parts[1]);
     if (parts[0] === "Scene") {
-      const token = scenes.get(parts[1]!)?.tokens.get(parts[3]);
-      if (parts[4] !== "Actor") return token ? { ...token, documentName: "Token" } : null;
+      const scene = scenes.get(parts[1]!);
+      if (parts[4] !== "Actor") return scene ? documents.within(scene, parts.slice(2)) : null;
+      const token = scene?.tokens.get(parts[3]);
       return token?.actor?.id === parts[5] ? within(token.actor, parts.slice(6)) : null;
     }
     return resolve(parts) ?? (await documents.resolve(parts)) ?? null;
@@ -768,10 +776,20 @@ export function fakeWorld(options: WorldOptions = {}) {
 
   /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
   class FakeToken {
+    static documentName = "Token";
     static schema = tokenFields;
     /** A token embeds its own actor data (common/documents/token.mjs:40-42). */
     static metadata = { embedded: { ActorDelta: "delta" } };
+    /**
+     * Document.hierarchy, whose one field names the class of the token's own actor data (common/documents/token.mjs:64).
+     * The fake stores that data as it comes, so the field here only names the class.
+     */
+    static hierarchy = { delta: { model: documents.classes.ActorDelta } };
     static MOVEMENT_FIELDS = system.Token.documentClass.MOVEMENT_FIELDS;
+    /** Document.deleteDocuments with a parent scene (common/abstract/document.mjs:696-701). */
+    static deleteDocuments(ids: string[], { parent }: { parent: any }) {
+      return parent.deleteEmbeddedDocuments("Token", ids);
+    }
     constructor(data: Record<string, any>, context: { parent: any }) {
       // biome-ignore lint/correctness/noConstructorReturn: the fake token is a plain object that makeToken builds.
       return makeToken(data, context.parent, null);

@@ -129,7 +129,7 @@ describe("create_documents", () => {
       create({ type: "Folder", documents: [{ name: "Lore" }] }),
       refused(
         "invalid_params",
-        /documents\[0\]: A new Folder needs a type, one of Actor, Adventure, Item.*get_schema with document Folder/
+        /documents\[0\]: A new Folder needs a type, one of ActiveEffect, Actor, Adventure, Item.*get_schema with document Folder/
       )
     );
     await assert.rejects(

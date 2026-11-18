@@ -328,6 +328,22 @@ describe("update_documents", () => {
     assert.equal(world.log.actorUpdates.length, 0);
   });
 
+  it("changes a scene's own data, and sends its walls to their own UUIDs", async () => {
+    const scene = world.addScene({ name: "Cellar" });
+    world.addWall(scene);
+    const result = await update({ uuid: scene.uuid, data: { name: "Wine cellar", navName: "Cellar" } });
+    assert.deepEqual(result.documents, [{ uuid: scene.uuid, changed: ["name", "navName"], unapplied: [] }]);
+    assert.deepEqual([scene.name, scene.navName, world.log.sceneUpdates], ["Wine cellar", "Cellar", 1]);
+    await assert.rejects(
+      update({ uuid: scene.uuid, data: { name: "Vault", walls: [{ c: [0, 0, 100, 0] }] } }),
+      refused(
+        "invalid_params",
+        /walls cannot be given: it holds the embedded documents of the Scene, which each have a UUID of their own.*Nothing was written\.$/
+      )
+    );
+    assert.deepEqual([scene.name, scene.walls.size, world.log.sceneUpdates], ["Wine cellar", 1, 1]);
+  });
+
   it("changes a world actor like any other document", async () => {
     const goblin = world.addActor({ name: "Goblin", type: "npc", system: { details: { cr: 1 } } });
     const result = await update({ uuid: `Actor.${goblin.id}`, data: { system: { details: { cr: 2 } } } });

@@ -226,6 +226,16 @@ export function fakeActors(env: Env) {
     return data;
   }
 
+  /** Document#getEmbeddedCollection, which throws for a name the class does not embed (common/abstract/document.mjs:828-835). */
+  function embeddedOf(parent: any, name: string) {
+    const held: Record<string, string> = system[parent.documentName as Kind["name"]].documentClass.metadata.embedded;
+    const collection = held[name];
+    if (!collection) {
+      throw new Error(`${name} is not a valid embedded Document within the ${parent.documentName} Document`);
+    }
+    return parent[collection];
+  }
+
   /** The documents of a shelf by id. A document stays the same object while its record is there, and reads it live. */
   function liveCollection(shelf: Shelf, make: (id: string) => any) {
     const made = new Map<string, any>();
@@ -298,7 +308,7 @@ export function fakeActors(env: Env) {
         return read().flags ?? {};
       },
       toObject: () => structuredClone(read()),
-      getEmbeddedCollection: () => item.effects
+      getEmbeddedCollection: (name: string) => embeddedOf(item, name)
     };
     const collection = liveCollection(effects, (id) => effectDocument(recordOf(effects, id), item));
     Object.defineProperty(item, "effects", { get: collection });
@@ -546,7 +556,7 @@ export function fakeActors(env: Env) {
       },
       /** The stored data with the embedded documents in it, as Document#toObject gives it. */
       toObject: () => ({ ...structuredClone(source), _id: id }),
-      getEmbeddedCollection: (name: string) => (name === "Item" ? actor.items : actor.effects),
+      getEmbeddedCollection: (name: string) => embeddedOf(actor, name),
       getDependentTokens({ concreteOnly = false }: { concreteOnly?: boolean } = {}) {
         return [...(dependentTokens.get(id ?? "") ?? [])].filter((token) => !concreteOnly || inItsScene(token));
       },
@@ -712,7 +722,7 @@ export function fakeActors(env: Env) {
         return actor._source.flags;
       },
       toObject: () => structuredClone(actor._source),
-      getEmbeddedCollection: (name: string) => (name === "Item" ? actor.items : actor.effects),
+      getEmbeddedCollection: (name: string) => embeddedOf(actor, name),
       getDependentTokens: ({ concreteOnly = false }: { concreteOnly?: boolean } = {}) =>
         !concreteOnly || inItsScene(token) ? [token] : []
     };

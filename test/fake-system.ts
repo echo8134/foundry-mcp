@@ -26,6 +26,8 @@ export class DocumentUUIDField extends StringField {}
 /** The `type` of a document that has subtypes (common/data/fields.mjs:4285-4310). */
 export class DocumentTypeField extends StringField {}
 export class JSONField extends StringField {}
+/** Text that is code, as a script region behavior holds it (common/data/fields.mjs:4759). */
+export class JavaScriptField extends StringField {}
 export class ObjectField extends DataField {}
 /** Foundry's TypeDataField: the data model of the document type, from CONFIG (common/data/fields.mjs:4385-4388). */
 export class TypeDataField extends ObjectField {
@@ -202,6 +204,49 @@ export function tokenSchema() {
     flags: new DocumentFlagsField(),
     _movementHistory: new ArrayField(new ObjectField()),
     _regions: new ArrayField(new DocumentIdField())
+  });
+}
+
+/**
+ * The scene fields a test uses, with the kinds and initial values of Foundry's own (common/documents/scene.mjs:51-163),
+ * and the embedded documents the fake world has. A level id and a grid size are not checked, because a test scene
+ * names them freely.
+ */
+export function sceneSchema() {
+  const holds = (documentName: string) => new EmbeddedCollectionField({ documentName });
+  return new SchemaField({
+    _id: new DocumentIdField({ nullable: true, initial: null }),
+    name: new StringField({ required: true, blank: false }),
+    navName: new StringField({ initial: "" }),
+    active: new BooleanField({ initial: false }),
+    navigation: new BooleanField({ initial: true }),
+    thumb: new FilePathField({ nullable: true, initial: null }),
+    width: new NumberField({ integer: true, positive: true, initial: 4000 }),
+    height: new NumberField({ integer: true, positive: true, initial: 3000 }),
+    padding: new NumberField({ min: 0, max: 0.5, step: 0.05, initial: 0.25 }),
+    shiftX: new NumberField({ integer: true, initial: 0 }),
+    shiftY: new NumberField({ integer: true, initial: 0 }),
+    grid: new SchemaField({
+      type: new NumberField({ integer: true, choices: [0, 1, 2, 3, 4, 5], initial: 1 }),
+      size: new NumberField({ integer: true, initial: 100 }),
+      distance: new NumberField({ positive: true, initial: 5 }),
+      units: new StringField({ initial: "ft" })
+    }),
+    tokenVision: new BooleanField({ initial: true }),
+    weather: new StringField({ initial: "" }),
+    fog: new SchemaField({ mode: new NumberField({ integer: true, choices: [0, 1, 2], initial: 1 }) }),
+    environment: new SchemaField({
+      darknessLevel: new NumberField({ min: 0, max: 1, initial: 0 }),
+      darknessLock: new BooleanField({ initial: false }),
+      globalLight: new SchemaField({ enabled: new BooleanField({ initial: false }) })
+    }),
+    folder: new ForeignDocumentField({ documentName: "Folder" }, { nullable: true, initial: null }),
+    flags: new DocumentFlagsField(),
+    tokens: holds("Token"),
+    levels: holds("Level"),
+    lights: holds("AmbientLight"),
+    regions: holds("Region"),
+    walls: holds("Wall")
   });
 }
 
