@@ -305,8 +305,8 @@ function deletionGroups(documents) {
 export async function deleteDocuments(planned) {
   const deleted = [];
   for (const { cls, parent, pack, documents } of deletionGroups(planned)) {
-    // Asked again at its turn, when nothing of the call is still to go: a token whose deletion a hook refused keeps
-    // its actor.
+    // Asked again at its turn. A document that a rule puts last finds the rest of the call gone by then, so a token
+    // whose deletion a hook refused keeps its actor.
     const due = documents.filter((document) => !rulesOf(cls.documentName).remove?.(document, () => false));
     if (due.length === 0) continue;
     const entries = new Map(

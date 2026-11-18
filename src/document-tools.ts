@@ -107,8 +107,9 @@ export const DOCUMENT_SPECS = {
       '"sounds/fire.ogg"}]}. Everything is checked before anything is written, and the whole call is refused when one ' +
       "entry cannot be built: an unknown or derived field, a key outside a map's fixed keys, an unknown subtype, data " +
       "Foundry's model refuses, a value Foundry would store as something else (named with what it would store), an " +
-      "img that does not load, flags.foundry-mcp. Every document made here, and every embedded document made with it, " +
-      "is flagged as bridge-made (managed: true). Returns {requested, created, documents: [{uuid, id, name, type, " +
+      "img that does not load, flags.foundry-mcp with another value than a bridge-made document has. The data of a " +
+      "bridge-made document, read with get_document, makes a copy. Every document made here, and every embedded " +
+      "document made with it, is flagged as bridge-made (managed: true). Returns {requested, created, documents: [{uuid, id, name, type, " +
       "unapplied}]} in the order given. unapplied names the given fields whose stored value is not the one asked for, " +
       "normally none: a hook, the system or the server changed them, as the server does with an _id or _stats given " +
       "for a new document. An entry Foundry created nothing for, because a hook or the system refused it, has error " +
@@ -149,7 +150,8 @@ export const DOCUMENT_SPECS = {
       "delete_documents. Returns {documents: [{uuid, changed, unapplied}]}: changed is the field paths whose stored " +
       "value changed or was removed, unapplied the field paths whose stored value is not the one asked for, normally " +
       "none (a hook, the system or the server can put a path in both). If Foundry fails on an entry, the error names " +
-      "it and what the stored data shows as changed, and the entries after it are not tried. " +
+      "it, what the stored data shows as changed and each password that was written, and the entries after it are " +
+      "not tried. " +
       HIGH_STAKES +
       " A user's password can be set and never read: one that is given is written on every call, and Foundry logs " +
       "that user out. It cannot be made blank or removed, passwordSalt cannot be given, and the role and password of " +
