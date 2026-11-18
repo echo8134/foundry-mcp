@@ -646,7 +646,7 @@ try {
         same((await pageLights()).length, 3, "lights after a refused sync");
         await assertRejects(
           tool(client, "sync_lights", { sceneId: ensuredId, lights: [{ at: [1, 1], dim: 5, managed: false }] }),
-          /were left out as hand-placed.*so nothing was changed/
+          /All 1 given lights were left out: each is marked managed: false.*Nothing was written\.$/
         );
         same((await pageLights()).length, 3, "lights after a sync whose given lights were all left out");
 
@@ -2787,7 +2787,9 @@ try {
             behaviors: region.behaviors.map((behavior) => ({
               id: behavior.id,
               type: behavior.type,
+              name: behavior._source.name,
               managed: behavior.flags["foundry-mcp"]?.managed === true,
+              waitsFor: behavior.flags["foundry-mcp"]?.pending ?? null,
               stored: [...(behavior._source.system.destinations ?? [])],
               leadsTo: [...(behavior.system.destinations ?? [])].map(
                 (uuid) => fromUuidSync(uuid, { relative: behavior })?.name ?? null
@@ -2964,7 +2966,7 @@ try {
     );
 
     await check(
-      "sync_regions builds a stair that lines up and a pair of teleport regions that name each other across levels",
+      "sync_regions builds a stair that lines up, and in two calls a pair of teleport regions that name each other across levels",
       async () => {
         const lined = await tool(client, "sync_regions", {
           sceneId: levelSceneId,
@@ -2979,25 +2981,49 @@ try {
           regions: [trapdoor()]
         });
         same(
-          [first.created, first.regions[0].behaviors[0].pending],
-          [1, ["e2e shaft"]],
+          [first.created, first.regions[0].behaviors[0].pending, first.regions[0].behaviors[0].unapplied],
+          [1, ["e2e shaft"], []],
           "the trapdoor, whose destination does not exist yet"
+        );
+        const waiting = await tool(client, "get_scene", { sceneId: levelSceneId });
+        same(
+          waiting.regions.find((region) => region.name === "e2e trapdoor").behaviors[0].system.destinations,
+          [{ region: "e2e shaft" }],
+          "the destination get_scene reports while it waits for its region"
         );
         const second = await tool(client, "sync_regions", {
           sceneId: levelSceneId,
           levels: [tower.id],
           regions: [shaft()]
         });
-        same([second.created, second.regions[0].behaviors[0].pending], [1, undefined], "the shaft");
+        // Whichever spelling Foundry stores the destination of a new behavior in, it is the one asked for.
+        same(
+          [second.created, second.regions[0].behaviors[0].pending, second.regions[0].behaviors[0].unapplied],
+          [1, undefined, []],
+          "the shaft, created with its destination"
+        );
+        same(
+          second.resolved.map((one) => [one.region, one.type, one.names, one.changed, one.unapplied]),
+          [
+            [
+              { id: first.regions[0].id, name: "e2e trapdoor" },
+              "teleportToken",
+              ["e2e shaft"],
+              ["system.destinations", "flags.foundry-mcp.pending"],
+              []
+            ]
+          ],
+          "the trapdoor, which the second call led on to the shaft"
+        );
         const third = await tool(client, "sync_regions", {
           sceneId: levelSceneId,
           levels: [upper.id],
           regions: [trapdoor()]
         });
         same(
-          [third.created, third.updated, third.regions[0].id, third.regions[0].behaviors[0].changed],
-          [0, 1, first.regions[0].id, ["system.destinations"]],
-          "the trapdoor again, changed in place"
+          [third.created, third.updated, third.regions[0].id, third.regions[0].behaviors[0].changed, third.resolved],
+          [0, 0, first.regions[0].id, [], undefined],
+          "the trapdoor again, which the second call had completed"
         );
 
         const regions = await pageRegions();
@@ -3009,12 +3035,18 @@ try {
             region.levels,
             region.managed,
             region.shapes,
-            region.behaviors.map((behavior) => [behavior.type, behavior.managed, behavior.leadsTo])
+            region.behaviors.map((behavior) => [
+              behavior.type,
+              behavior.name,
+              behavior.managed,
+              behavior.waitsFor,
+              behavior.leadsTo
+            ])
           ]),
           [
-            ["e2e stair", [ground.id, upper.id], true, 1, [["changeLevel", true, []]]],
-            ["e2e trapdoor", [upper.id], true, 2, [["teleportToken", true, ["e2e shaft"]]]],
-            ["e2e shaft", [tower.id], true, 1, [["teleportToken", true, ["e2e trapdoor"]]]]
+            ["e2e stair", [ground.id, upper.id], true, 1, [["changeLevel", "", true, null, []]]],
+            ["e2e trapdoor", [upper.id], true, 2, [["teleportToken", "", true, null, ["e2e shaft"]]]],
+            ["e2e shaft", [tower.id], true, 1, [["teleportToken", "", true, null, ["e2e trapdoor"]]]]
           ],
           "the regions in the page"
         );

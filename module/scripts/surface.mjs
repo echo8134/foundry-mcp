@@ -6,4 +6,4 @@
  * it is reloaded, instead of calling a method the tab's older module lacks or sending it a parameter it ignores.
  * A module that names no number counts as 1.
  */
-export const SURFACE = 7;
+export const SURFACE = 8;
