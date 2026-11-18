@@ -131,6 +131,19 @@ describe("sync_regions and the stairs between levels", () => {
     assert.deepEqual(await destinationsOf("Down"), []);
   });
 
+  it("keeps a waiting name when an entry leaves its destinations out, as one that switches the stair off", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
+    const off = { name: "Down", shapes: [box(0, 0)], behaviors: [{ type: "teleportToken", disabled: true }] };
+    const switched = await sync({ levels: ["lvl1"], regions: [off] });
+    assert.deepEqual(
+      [switched.regions[0].behaviors[0].changed, switched.regions[0].behaviors[0].pending, behaviorOf("Down").flags],
+      [["disabled"], ["Up"], waitingFor("Up")]
+    );
+    assert.deepEqual(await destinationsOf("Down"), [{ region: "Up" }]);
+    assert.deepEqual((await sync({ levels: ["upper"], regions: [door("Up")] })).resolved[0].names, ["Up"]);
+    assert.deepEqual(await destinationsOf("Down"), [named("Up")[0].uuid]);
+  });
+
   it("leads a waiting name on only to the one bridge-made region of that name, and only if it is on one level", async () => {
     await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" }, { region: "Loft" })] });
     world.addDocument("Region", { name: "Up", levels: ["upper"] }, { parent: scene });

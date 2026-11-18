@@ -267,7 +267,10 @@ async function planBehaviors(region, stored, entries, where, { scene, levels, re
       `behaviors of the region ${region.name} are the ${key}`,
       at
     );
-    const { system, pending } = await withReferences(type, fields.system, resolve, at);
+    const { system, pending: open } = await withReferences(type, fields.system, resolve, at);
+    // A field the entry leaves out keeps the names it waits for, as it keeps its stored destinations.
+    const kept = behavior ? pendingOf(behavior).filter(({ field }) => fields.system?.[field] === undefined) : [];
+    const pending = [...kept, ...open];
     const stated = { ...fields, name, ...(system !== undefined && { system }) };
     if (behavior) {
       const asked = withoutOwnFlags(kind, stated, behavior._source);
