@@ -305,6 +305,29 @@ describe("update_documents", () => {
     );
   });
 
+  it("takes back an actor whose prototype token carries the bridge's flag, as Foundry's Assign Token leaves it", async () => {
+    const goblin = world.addActor({
+      name: "Goblin",
+      flags: MANAGED,
+      prototypeToken: { name: "Goblin", actorLink: false, flags: MANAGED }
+    });
+    const { data } = await get(`Actor.${goblin.id}`);
+    assert.deepEqual(data.prototypeToken.flags, MANAGED);
+    assert.deepEqual((await update({ uuid: `Actor.${goblin.id}`, data })).documents[0], {
+      uuid: `Actor.${goblin.id}`,
+      changed: [],
+      unapplied: []
+    });
+    await assert.rejects(
+      update({
+        uuid: `Actor.${goblin.id}`,
+        data: { prototypeToken: { flags: { "foundry-mcp": { managed: false } } } }
+      }),
+      refused("invalid_params", /prototypeToken\.flags\.foundry-mcp cannot be given/)
+    );
+    assert.equal(world.log.actorUpdates.length, 0);
+  });
+
   it("changes a world actor like any other document", async () => {
     const goblin = world.addActor({ name: "Goblin", type: "npc", system: { details: { cr: 1 } } });
     const result = await update({ uuid: `Actor.${goblin.id}`, data: { system: { details: { cr: 2 } } } });

@@ -561,7 +561,8 @@ export function fakeDocuments(env: Env) {
   /**
    * A compendium pack. One of the world is unlocked and one of a system or module locked, until the Gamemaster says
    * otherwise (client/documents/collections/compendium-collection.mjs:227-229). Its index holds a plain object for
-   * each document, with the index fields of the class and the fields asked for, and loads no document (:337-367).
+   * each document, with the index fields of the class and the fields asked for, a dot path as nested objects, and
+   * loads no document (:337-367, :659-680).
    */
   function addPack(packId: string, type: string, options: { title?: string; locked?: boolean } = {}) {
     const documents = new Collection<any>();

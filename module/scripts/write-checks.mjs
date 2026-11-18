@@ -43,7 +43,9 @@ const schemaOf = (kind) => CONFIG[kind.document].documentClass.schema;
 
 /**
  * The kind of any document name. Actor, Item and ActiveEffect keep their entries above. Any other document goes by its
- * name, and has the bridge's own flag where its schema has flags: a Setting has none (common/documents/setting.mjs:42-52).
+ * name, has the bridge's own flag where its schema has flags (a Setting has none, common/documents/setting.mjs:42-52),
+ * and has an entry below a dnd5e TypeDataField5e checked by the data model that field picks for it, wherever the
+ * system put such a field.
  */
 export function kindOf(documentName) {
   if (Object.hasOwn(KINDS, documentName)) return KINDS[documentName];
@@ -52,7 +54,7 @@ export function kindOf(documentName) {
     document: documentName,
     noun: documentName,
     ownFlags: Object.hasOwn(fields, "flags") ? [OWN_FLAG] : [],
-    schemaFor: {},
+    schemaFor: TYPED_ENTRY_SCHEMAS,
     alsoListed: ""
   };
 }

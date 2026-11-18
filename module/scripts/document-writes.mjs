@@ -2,7 +2,7 @@
 // writes the plan. A plan is made once before the call waits for its turn, to refuse a bad request at once, and again
 // when its turn comes: a write queued before it may have changed what the plan was made on.
 
-import { isPlainObject, pickData, updateFor, writeOutcome } from "./data-diff.mjs";
+import { dropAt, hasPath, isPlainObject, pickData, sameData, updateFor, writeOutcome } from "./data-diff.mjs";
 import {
   byPosition,
   classOf,
@@ -21,6 +21,7 @@ import {
 import { rulesOf, secretsGiven, withoutSecrets } from "./document-rules.mjs";
 import { MethodError } from "./errors.mjs";
 import { withoutStoredFlag } from "./item-data.mjs";
+import { getPath } from "./paths.mjs";
 import { FLAG_SCOPE, isManaged } from "./scope.mjs";
 import {
   checkAsked,
@@ -168,6 +169,19 @@ export async function createDocuments(request) {
   };
 }
 
+/**
+ * get_document returns the document's id and the bridge's own flag in the stored data, and that data can be passed
+ * back. So both are taken while they equal the stored ones, the flag wherever the kind of document has it, and are no
+ * part of the change.
+ */
+function withoutStoredIdentity(kind, { _id, ...given }, stored) {
+  const data = structuredClone(given);
+  for (const path of kind.ownFlags) {
+    if (hasPath(data, path) && sameData(getPath(data, path), getPath(stored, path))) dropAt(data, path);
+  }
+  return data;
+}
+
 /** Every check of a change to one document, and what the change is to bring about. Reads only. */
 async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   const document = await resolveDocument(uuid, { where, write: true });
@@ -194,7 +208,7 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
       where
     );
   }
-  const asked = withoutStoredFlag(given, document._source);
+  const asked = withoutStoredIdentity(kind, given, document._source);
   refuseRuled(rulesOf(name).update?.(document, asked, remove), where);
   checkAsked(kind, asked, remove, document.type, where);
   const wanted = wantedChanges(kind, document, asked, where);
