@@ -77,7 +77,7 @@ const id = () => new DocumentIdField({ nullable: true, initial: null });
 /**
  * The fields of Foundry's own documents that the tests use, with their kinds and initial values
  * (common/documents/journal-entry.mjs, journal-entry-page.mjs:44-75, journal-entry-category.mjs, playlist.mjs,
- * playlist-sound.mjs, chat-message.mjs:40-66, user.mjs:48-68, setting.mjs:42-52, macro.mjs, folder.mjs).
+ * playlist-sound.mjs, chat-message.mjs:40-66, user.mjs:48-68, setting.mjs:39-49, macro.mjs, folder.mjs).
  */
 const DEFINITIONS: Definition[] = [
   {
