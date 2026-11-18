@@ -456,6 +456,9 @@ export function fakeWorld(options: WorldOptions = {}) {
       },
       get foreground() {
         return source.foreground;
+      },
+      get visibility() {
+        return source.visibility;
       }
     };
   }

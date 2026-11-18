@@ -132,9 +132,27 @@ function loadImage(src) {
 }
 
 /**
- * Without a level the scene is rendered as Scene#createThumbnail renders it by itself, on its initial level. With one,
- * that call draws the level's background and foreground as the canvas places them, and those of the levels shown
- * with it (client/documents/scene.mjs:1706-1779, Scene#_configureLevelTextures at :921-941).
+ * The images Scene#createThumbnail draws for a level, each with what a refusal calls it: the level's own background
+ * and foreground, and those of the levels shown with it (Scene#_configureLevelTextures,
+ * client/documents/scene.mjs:921-941, Level#isVisible at client/documents/level.mjs:37-43).
+ * @returns {[string, string][]}
+ */
+function levelImages(scene, level) {
+  const shown = [...level.visibility.levels].flatMap((id) => scene.levels.get(id) ?? []);
+  return [
+    ["scene's background image", level.background?.src],
+    ["scene's foreground image", level.foreground?.src],
+    ...shown.flatMap((other) => [
+      [`background image of the level ${other.name}, which is shown with it,`, other.background?.src],
+      [`foreground image of the level ${other.name}, which is shown with it,`, other.foreground?.src]
+    ])
+  ].filter(([, src]) => src);
+}
+
+/**
+ * The scene as Scene#createThumbnail renders one of its levels: the one it is given, and the initial level without
+ * one (client/documents/scene.mjs:1711-1713). It draws the level's images as the canvas places them. Without a level
+ * the walls, lights, tokens and regions of every level are drawn over it, and with one only those on that level.
  */
 async function getSceneImage({
   sceneId,
@@ -153,22 +171,17 @@ async function getSceneImage({
   const width = Math.max(1, Math.round(rect.width * scale));
   const height = Math.max(1, Math.round(rect.height * scale));
 
-  const src = level?.background?.src ?? null;
-  const images = [
-    ["background", src],
-    ...(levelId === undefined ? [] : [["foreground", level.foreground?.src ?? null]])
-  ];
-  // Scene#createThumbnail draws no mesh for a texture that did not load (client/documents/scene.mjs).
-  for (const [which, image] of images) {
-    if (image && !(await loadTexture(image))) {
-      throw new MethodError("foundry_error", `The scene's ${which} image ${image} could not be loaded.`);
+  // Scene#createThumbnail draws no mesh for a texture that did not load (client/documents/scene.mjs:1756-1758).
+  for (const [which, image] of levelImages(scene, level)) {
+    if (!(await loadTexture(image))) {
+      throw new MethodError("foundry_error", `The ${which} ${image} could not be loaded.`);
     }
   }
 
   let thumb;
   try {
     ({ thumb } = await scene.createThumbnail({
-      ...(levelId !== undefined && { level: levelId }),
+      level: level.id,
       width,
       height,
       format: "image/webp",
@@ -182,7 +195,7 @@ async function getSceneImage({
   surface.width = width;
   surface.height = height;
   const context = surface.getContext("2d");
-  context.fillStyle = level?.background?.color ?? "#999999";
+  context.fillStyle = level.background?.color ?? "#999999";
   context.fillRect(0, 0, width, height);
   context.drawImage(await loadImage(thumb), 0, 0, width, height);
   const view = { rect, grid: scene.grid, width, height };
@@ -197,7 +210,7 @@ async function getSceneImage({
   const dataUrl = surface.toDataURL("image/webp", 0.9);
   const [, mimeType, data] = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl) ?? [];
   if (!data) throw new MethodError("foundry_error", "The browser could not encode the scene image.");
-  return { mimeType, data, frame: { width, height }, background: src !== null };
+  return { mimeType, data, frame: { width, height }, background: Boolean(level.background?.src) };
 }
 
 const sceneLevelIds = (scene) => [...scene.levels.keys()];

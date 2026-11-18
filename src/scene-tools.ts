@@ -274,13 +274,15 @@ export const SCENE_SPECS = {
       "(yellow, or purple for a darkness source). Set showTokens to draw every token as an ellipse over its footprint, " +
       "outlined by disposition (green friendly, white neutral, orange hostile, cyan secret) and left unfilled when hidden. " +
       "Set showRegions to draw every region in its own colour: its area filled lightly, with a hole left open, a dashed " +
-      "outline, and its name in the middle. Without level the image shows the scene's initial level and the walls, " +
-      "lights, tokens and regions of every level. With level, a level id from get_scene, it shows that level as " +
-      "Foundry shows it: the level's background and foreground images, placed and scaled by the level's textures, " +
-      "over the level's background colour, and the images of the levels it shows with it (visibility.levels). Then " +
-      "showWalls, showLights and showRegions draw only what is on that level, which includes what names no levels " +
-      "and so is on all of them, and showTokens only the tokens whose level it is. `background` then says whether " +
-      "that level has a background image. A level id the scene lacks is refused.",
+      "outline, and its name in the middle. The image shows one level as Foundry shows it: the level's background " +
+      "and foreground images, placed and scaled by the level's textures, over the level's background colour, and " +
+      "the images of the levels it shows with it (visibility.levels). Without level that is the scene's initial " +
+      "level, and showWalls, showLights, showTokens and showRegions draw what is on every level. With level, a level " +
+      "id from get_scene, showWalls, showLights and showRegions draw only what is on that level, which includes " +
+      "what names no levels and so is on all of them, and showTokens only the tokens whose level it is. " +
+      "`background` says whether the rendered level has a background image. A level id the scene lacks is refused, " +
+      "and so is a render, with or without level, when an image it would show does not load: the background or the " +
+      "foreground of the level, or of a level shown with it.",
     input: z.object({
       sceneId,
       maxSize: z.number().int().min(64).max(4096).optional().describe("Longest image side in pixels. Default 1568."),

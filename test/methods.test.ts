@@ -102,7 +102,12 @@ function stubScene(options: { levels?: string[]; walls?: string[]; src?: string 
     dimensions: { sceneX: 0, sceneY: 0, sceneWidth: 1000, sceneHeight: 800 },
     grid: { distance: 5 },
     levels: new Map((options.levels ?? ["lvl1"]).map((id) => [id, { id }])),
-    initialLevel: { background: { src: options.src ?? null, color: "#999999" } },
+    initialLevel: {
+      id: "lvl1",
+      background: { src: options.src ?? null, color: "#999999" },
+      foreground: { src: null },
+      visibility: { levels: [] }
+    },
     walls,
     async createEmbeddedDocuments(_name: string, data: unknown[]) {
       created.push(data);

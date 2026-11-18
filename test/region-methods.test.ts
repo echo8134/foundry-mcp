@@ -275,28 +275,44 @@ describe("get_scene_image of one level", () => {
     assert.equal((await methods.get_scene_image({ sceneId: scene.id, level: "crypt" })).background, false);
   });
 
-  it("renders the initial level as before when no level is given", async () => {
+  it("renders the scene's initial level when no level is given", async () => {
     const { drawn } = stubCanvas();
-    // Without a level only the background is loaded first, as before: a foreground that fails stops nothing.
-    scene.levels.get("lvl1")._source.foreground.src = "maps/missing.webp";
     const result = await methods.get_scene_image({ sceneId: scene.id });
     assert.deepEqual(world.log.thumbnailLevels, ["lvl1"]);
     assert.equal(result.background, false);
     assert.equal(drawn.find((call) => call.op === "fillRect")!.fillStyle, "#999999");
   });
 
-  it("refuses a level whose foreground image does not load, and a level the scene does not have, before rendering", async () => {
+  it("refuses a level whose foreground image does not load, given or not, and a level the scene does not have, before rendering", async () => {
     stubCanvas();
     scene.levels.get("upper")._source.foreground.src = "maps/missing.webp";
-    await assert.rejects(
-      methods.get_scene_image({ sceneId: scene.id, level: "upper" }),
-      refused("foundry_error", /foreground image maps\/missing\.webp could not be loaded/)
-    );
+    scene.levels.get("lvl1")._source.foreground.src = "maps/missing.webp";
+    for (const level of ["upper", undefined]) {
+      await assert.rejects(
+        methods.get_scene_image({ sceneId: scene.id, ...(level && { level }) }),
+        refused("foundry_error", /^The scene's foreground image maps\/missing\.webp could not be loaded\.$/)
+      );
+    }
     await assert.rejects(
       methods.get_scene_image({ sceneId: scene.id, level: "attic" }),
       refused("invalid_params", /Unknown level ids .*attic/)
     );
     assert.deepEqual(world.log.thumbnailLevels, []);
+  });
+
+  it("refuses an image that does not load of a level shown with the rendered one, and loads no image of a level that is not", async () => {
+    stubCanvas();
+    world.addLevel(scene, "crypt", { name: "Crypt", background: { src: "maps/missing.webp" } });
+    await methods.get_scene_image({ sceneId: scene.id, level: "upper" });
+    scene.levels.get("upper")._source.visibility.levels = ["crypt", "upper"];
+    await assert.rejects(
+      methods.get_scene_image({ sceneId: scene.id, level: "upper" }),
+      refused(
+        "foundry_error",
+        /^The background image of the level Crypt, which is shown with it, maps\/missing\.webp could not be loaded\.$/
+      )
+    );
+    assert.deepEqual(world.log.thumbnailLevels, ["upper"]);
   });
 
   it("draws the walls, lights and regions on the level and those on every level, and the tokens whose level it is", async () => {
