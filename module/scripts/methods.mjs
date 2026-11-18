@@ -14,7 +14,7 @@ import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
 import { lightData, lightFields } from "./light-data.mjs";
 import { regionFields } from "./region-data.mjs";
-import { prepareRegions, syncRegions } from "./region-methods.mjs";
+import { planRegionSync, writeRegionSync } from "./region-methods.mjs";
 import {
   canvasOverflow,
   levelFields,
@@ -539,6 +539,21 @@ const onScene =
     return { scene, request: check?.(scene, request) ?? request };
   };
 
+/**
+ * A planned write on a scene. As with onScene, the scene a call without sceneId means is the one of the moment the
+ * call arrives: the Gamemaster may view another by the time its turn comes.
+ */
+const plannedOnScene = (name, plan, write) =>
+  serialised(
+    name,
+    async (params) => {
+      const fixed = onScene()(params);
+      await plan(fixed.scene, fixed.request);
+      return fixed;
+    },
+    async ({ scene, request }) => write(scene, await plan(scene, request))
+  );
+
 export const METHODS = Object.freeze({
   get_scene: getScene,
   get_scene_image: getSceneImage,
@@ -546,7 +561,7 @@ export const METHODS = Object.freeze({
   delete_walls: serialised("delete_walls", onScene(), deleteWalls),
   sync_walls: serialised("sync_walls", onScene(checkWallRequest), syncWalls),
   sync_lights: serialised("sync_lights", onScene(checkLightRequest), syncLights),
-  sync_regions: serialised("sync_regions", prepareRegions, syncRegions),
+  sync_regions: plannedOnScene("sync_regions", planRegionSync, writeRegionSync),
   list_scenes: listScenes,
   ensure_scene: serialised("ensure_scene", checkEnsureSceneInput, ensureScene),
   list_actors: listActors,

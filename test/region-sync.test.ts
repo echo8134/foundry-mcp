@@ -124,7 +124,7 @@ describe("sync_regions", () => {
     );
     assert.deepEqual(writes(), ["create Region", "update Region"]);
     assert.deepEqual(world.log.documentWrites[1]!.data, [
-      { color: "#113355", shapes: [storedBox(400, 400, 200, 200)] }
+      { _id: first.regions[0].id, color: "#113355", shapes: [storedBox(400, 400, 200, 200)] }
     ]);
     assert.deepEqual(named("Nave")[0]._source.shapes, [storedBox(400, 400, 200, 200)]);
   });
@@ -157,6 +157,14 @@ describe("sync_regions", () => {
       scene.regions.map((region: any) => [region.id, region._source]),
       [[byHand.id, before]]
     );
+  });
+
+  it("lists a hand-made region of an entry's name only when it is on the call's level set", async () => {
+    const beside = world.addDocument("Region", { name: "Stairs", levels: ["upper"] }, { parent: scene });
+    world.addDocument("Region", { name: "Stairs", levels: ["lvl1"] }, { parent: scene });
+    world.addDocument("Region", { name: "Stairs" }, { parent: scene });
+    const result = await sync({ levels: ["upper"], regions: [{ name: "Stairs", shapes: [box(0, 0)] }] });
+    assert.deepEqual(result.handPlaced, [{ id: beside.id, name: "Stairs" }]);
   });
 
   it("owns the bridge-made regions of exactly its level set, and takes every level of the scene as no levels", async () => {
@@ -227,26 +235,80 @@ describe("sync_regions and the behaviors of a region", () => {
     regions: [{ name: "Stair", shapes: [box(0, 0)], ...(behaviors && { behaviors }) }]
   });
   const behaviorsOf = (name: string) =>
-    named(name)[0].behaviors.map((behavior: any) => [behavior.name, behavior.type, behavior.flags]);
+    named(name)[0].behaviors.map((behavior: any) => [behavior._source.name, behavior.type, behavior.flags]);
 
-  it("creates a region with its behaviors in one write, flagged as bridge-made, an unnamed one under its type", async () => {
+  it("creates a region with its behaviors in one write, flagged as bridge-made, an unnamed one without a name", async () => {
     const result = await sync(
       stair([{ type: "changeLevel" }, { type: "pauseGame", name: "Halt", system: { once: true } }])
     );
     assert.deepEqual(writes(), ["create Region"]);
     assert.deepEqual(behaviorsOf("Stair"), [
-      ["changeLevel", "changeLevel", MANAGED],
+      ["", "changeLevel", MANAGED],
       ["Halt", "pauseGame", MANAGED]
     ]);
+    // Foundry shows a behavior without a name under the label of its type.
+    assert.equal([...named("Stair")[0].behaviors.values()][0].name, "Label of changeLevel");
     const [region] = result.regions;
     assert.deepEqual(
-      region.behaviors.map(({ id, changed, ...rest }: any) => [typeof id, rest]),
+      region.behaviors.map(({ id, changed, ...rest }: any) => [named("Stair")[0].behaviors.has(id), rest]),
       [
-        ["string", { name: "changeLevel", type: "changeLevel", created: true, unapplied: [] }],
-        ["string", { name: "Halt", type: "pauseGame", created: true, unapplied: [] }]
+        [true, { name: "", type: "changeLevel", created: true, unapplied: [] }],
+        [true, { name: "Halt", type: "pauseGame", created: true, unapplied: [] }]
       ]
     );
     assert.equal(region.removedBehaviors, 0);
+  });
+
+  it("creates the regions of a call in one write, and the behaviors of a region that exists in one write each way", async () => {
+    await sync({
+      regions: [
+        { name: "Stair", shapes: [box(0, 0)], behaviors: [{ type: "pauseGame", name: "Old" }] },
+        { name: "Hall", shapes: [box(2, 2)] }
+      ]
+    });
+    assert.deepEqual(writes(), ["create Region"]);
+    assert.equal(world.log.documentWrites[0]!.data.length, 2);
+    const before = writes().length;
+    const result = await sync({
+      regions: [
+        {
+          name: "Stair",
+          shapes: [box(1, 1)],
+          behaviors: [
+            { type: "pauseGame", name: "One" },
+            { type: "pauseGame", name: "Two" }
+          ]
+        },
+        { name: "Hall", shapes: [box(3, 3)] }
+      ]
+    });
+    assert.deepEqual(writes().slice(before), ["update Region", "create RegionBehavior", "delete RegionBehavior"]);
+    assert.deepEqual(
+      world.log.documentWrites.slice(before).map((write) => write.data.length),
+      [2, 2, 1]
+    );
+    assert.deepEqual(
+      [result.updated, result.regions[0].behaviors.map((one: any) => one.created), result.regions[0].removedBehaviors],
+      [2, [true, true], 1]
+    );
+  });
+
+  it("finds a behavior by its type and its name, so two of one name and different types lie side by side", async () => {
+    const both = stair([
+      { type: "pauseGame", name: "Step" },
+      { type: "changeLevel", name: "Step" }
+    ]);
+    const first = await sync(both);
+    assert.deepEqual(behaviorsOf("Stair"), [
+      ["Step", "pauseGame", MANAGED],
+      ["Step", "changeLevel", MANAGED]
+    ]);
+    const before = writes();
+    const again = await sync(both);
+    assert.deepEqual(
+      [writes(), again.regions[0].behaviors.map((one: any) => one.id)],
+      [before, first.regions[0].behaviors.map((one: any) => one.id)]
+    );
   });
 
   it("brings the bridge-made behaviors to the list by name: one changed in place, one created, one deleted", async () => {
@@ -282,8 +344,8 @@ describe("sync_regions and the behaviors of a region", () => {
     );
     assert.equal(result.regions[0].removedBehaviors, 1);
     assert.deepEqual(writes().slice(before.length), [
-      "update RegionBehavior",
       "create RegionBehavior",
+      "update RegionBehavior",
       "delete RegionBehavior"
     ]);
     assert.deepEqual(
@@ -318,19 +380,30 @@ describe("sync_regions and the behaviors of a region", () => {
     );
   });
 
-  it("finds a bridge-made behavior that was stored without a name by its type, and names it", async () => {
+  it("finds a bridge-made behavior without a name by its type, also one that is stored under its type as its name", async () => {
     const region = world.addDocument(
       "Region",
-      { name: "Stair", flags: MANAGED, behaviors: [{ type: "pauseGame", flags: MANAGED }] },
+      {
+        name: "Stair",
+        flags: MANAGED,
+        shapes: [storedBox(0, 0)],
+        behaviors: [
+          { type: "pauseGame", flags: MANAGED },
+          { type: "changeLevel", name: "changeLevel", flags: MANAGED }
+        ]
+      },
       { parent: scene }
     );
-    const [behavior] = region.behaviors.values();
-    const result = await sync(stair([{ type: "pauseGame" }]));
+    const [pause, change] = region.behaviors.values();
+    const result = await sync(stair([{ type: "pauseGame" }, { type: "changeLevel" }]));
     assert.deepEqual(
       result.regions[0].behaviors.map(({ id, created, changed }: any) => [id, created, changed]),
-      [[behavior.id, false, ["name"]]]
+      [
+        [pause.id, false, []],
+        [change.id, false, ["name"]]
+      ]
     );
-    assert.equal(behavior.name, "pauseGame");
+    assert.deepEqual([pause._source.name, change._source.name, writes()], ["", "", ["update RegionBehavior"]]);
   });
 
   it("refuses to delete a bridge-made region that holds a behavior added by hand", async () => {
@@ -433,7 +506,7 @@ describe("sync_regions and the stairs between levels", () => {
       [await destinationsOf("East"), await destinationsOf("West")],
       [[`${scene.uuid}.Region.${west.id}`], [`${scene.uuid}.Region.${east.id}`]]
     );
-    assert.deepEqual(writes(), ["create Region", "create Region"]);
+    assert.deepEqual(writes(), ["create Region"]);
   });
 
   it("writes nothing on the next run although Foundry keeps a destination in another spelling than the given one", async () => {
@@ -458,26 +531,162 @@ describe("sync_regions and the stairs between levels", () => {
     assert.deepEqual(writes(), settled);
   });
 
-  it("leaves a region out that no bridge-made region has the name of yet, reports it, and finds it on a later run", async () => {
+  const PENDING = "flags.foundry-mcp.pending";
+  const waitingFor = (...regions: string[]) => ({
+    "foundry-mcp": { managed: true, pending: regions.map((region) => ({ field: "destinations", region })) }
+  });
+  const behaviorOf = (name: string) => [...named(name)[0].behaviors.values()][0];
+
+  it("builds two regions on different levels that name each other in two calls: the second leads the first one on", async () => {
     const down = { levels: ["lvl1"], regions: [door("Down", { region: "Up" })] };
     const up = { levels: ["upper"], regions: [door("Up", { region: "Down" })] };
     const first = await sync(down);
-    assert.deepEqual(first.regions[0].behaviors[0].pending, ["Up"]);
-    assert.deepEqual(await destinationsOf("Down"), []);
+    assert.deepEqual([first.regions[0].behaviors[0].pending, first.resolved], [["Up"], undefined]);
+    assert.deepEqual(
+      [storedDestinations("Down"), await destinationsOf("Down"), behaviorOf("Down").flags],
+      [[], [{ region: "Up" }], waitingFor("Up")]
+    );
 
     const second = await sync(up);
     assert.equal(second.regions[0].behaviors[0].pending, undefined);
-    assert.deepEqual(await destinationsOf("Up"), [named("Down")[0].uuid]);
-
-    const third = await sync(down);
+    assert.deepEqual(second.resolved, [
+      {
+        id: behaviorOf("Down").id,
+        type: "teleportToken",
+        region: { id: first.regions[0].id, name: "Down" },
+        names: ["Up"],
+        changed: ["system.destinations", PENDING],
+        unapplied: []
+      }
+    ]);
     assert.deepEqual(
-      [third.regions[0].id, third.regions[0].behaviors[0].changed, third.regions[0].behaviors[0].pending],
-      [first.regions[0].id, ["system.destinations"], undefined]
+      [await destinationsOf("Up"), await destinationsOf("Down"), behaviorOf("Down").flags],
+      [[named("Down")[0].uuid], [named("Up")[0].uuid], MANAGED]
     );
-    assert.deepEqual(await destinationsOf("Down"), [named("Up")[0].uuid]);
 
     const before = writes();
-    assert.deepEqual([(await sync(down)).updated, (await sync(up)).updated, writes()], [0, 0, before]);
+    const third = await sync(down);
+    assert.deepEqual(
+      [third.updated, third.resolved, third.regions[0].behaviors[0].pending, (await sync(up)).updated, writes()],
+      [0, undefined, undefined, 0, before]
+    );
+  });
+
+  it("keeps a name that still leads nowhere when get_scene's regions are passed back, and drops one the entry no longer gives", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
+    const before = writes();
+    const read = await viaTool("get_scene", { sceneId: scene.id });
+    const back = await sync({ levels: ["lvl1"], regions: read.regions });
+    assert.deepEqual([back.updated, back.regions[0].behaviors[0].pending, writes()], [0, ["Up"], before]);
+
+    const dropped = await sync({ levels: ["lvl1"], regions: [door("Down")] });
+    assert.deepEqual([dropped.regions[0].behaviors[0].changed, behaviorOf("Down").flags], [[PENDING], MANAGED]);
+    assert.equal((await sync({ levels: ["upper"], regions: [door("Up")] })).resolved, undefined);
+    assert.deepEqual(await destinationsOf("Down"), []);
+  });
+
+  it("leads a waiting name on only to the one bridge-made region of that name, and only if it is on one level", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" }, { region: "Loft" })] });
+    world.addDocument("Region", { name: "Up", levels: ["upper"] }, { parent: scene });
+    const onBoth = await sync({ regions: [door("Up")] });
+    assert.deepEqual(
+      [onBoth.resolved, await destinationsOf("Down")],
+      [undefined, [{ region: "Up" }, { region: "Loft" }]]
+    );
+    await sync({ regions: [] });
+
+    const twin = world.addDocument("Region", { name: "Loft", levels: ["lvl1"], flags: MANAGED }, { parent: scene });
+    const made = await sync({ levels: ["upper"], regions: [door("Loft"), door("Up")] });
+    assert.deepEqual(
+      made.resolved.map((one: any) => [one.region.name, one.names, one.changed]),
+      [["Down", ["Up"], ["system.destinations", PENDING]]]
+    );
+    assert.deepEqual(
+      [await destinationsOf("Down"), behaviorOf("Down").flags],
+      [[`${scene.uuid}.Region.${made.regions[1].id}`, { region: "Loft" }], waitingFor("Loft")]
+    );
+    assert.ok(scene.regions.has(twin.id));
+  });
+
+  it("leads a waiting name on as the entry's own destination when its level set is synced after the region came another way", async () => {
+    const down = { levels: ["lvl1"], regions: [door("Down", { region: "Up" })] };
+    await sync(down);
+    const up = world.addDocument("Region", { name: "Up", levels: ["upper"], flags: MANAGED }, { parent: scene });
+    const again = await sync(down);
+    const [behavior] = again.regions[0].behaviors;
+    assert.deepEqual(
+      [again.resolved, behavior.changed, behavior.pending, await destinationsOf("Down")],
+      [undefined, ["system.destinations", PENDING], undefined, [up.uuid]]
+    );
+  });
+
+  it("adds the region a waiting name leads to beside the destinations the behavior has", async () => {
+    const far = world.addDocument("Region", { name: "Far", levels: ["lvl1"] }, { parent: scene });
+    await sync({ levels: ["lvl1"], regions: [door("Down", far.uuid, { region: "Up" })] });
+    const made = await sync({ levels: ["upper"], regions: [door("Up")] });
+    assert.deepEqual(await destinationsOf("Down"), [far.uuid, `${scene.uuid}.Region.${made.regions[0].id}`]);
+  });
+
+  it("leads a name to the region of the call that has it before one of another level set", async () => {
+    world.addDocument("Region", { name: "West", levels: ["lvl1"], flags: MANAGED }, { parent: scene });
+    const result = await sync({ levels: ["upper"], regions: [door("East", { region: "West" }), door("West")] });
+    assert.deepEqual(await destinationsOf("East"), [`${scene.uuid}.Region.${result.regions[1].id}`]);
+  });
+
+  it("never leads on a name kept on a behavior the bridge did not make", async () => {
+    const kept = { "foundry-mcp": { pending: [{ field: "destinations", region: "Up" }] } };
+    world.addDocument(
+      "Region",
+      { name: "Old door", levels: ["lvl1"], behaviors: [{ type: "teleportToken", flags: kept }] },
+      { parent: scene }
+    );
+    const made = await sync({ levels: ["upper"], regions: [door("Up")] });
+    assert.deepEqual([made.resolved, writes(), await destinationsOf("Old door")], [undefined, ["create Region"], []]);
+  });
+
+  it("leads a waiting name on in a region of the same call whose entry gives no behaviors", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
+    const result = await sync({ levels: ["lvl1"], regions: [{ name: "Down", shapes: [box(0, 0)] }, door("Up")] });
+    assert.deepEqual(
+      result.resolved.map((one: any) => [one.region.name, one.names]),
+      [["Down", ["Up"]]]
+    );
+    assert.deepEqual(await destinationsOf("Down"), [named("Up")[0].uuid]);
+  });
+
+  it("names a destination it led on when a later step of the call fails", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
+    world.addDocument("Region", { name: "Old", levels: ["upper"], flags: MANAGED }, { parent: scene });
+    world.control.documentError = (action: string) => (action === "delete" ? "connection lost" : undefined);
+    await assert.rejects(
+      sync({ levels: ["upper"], regions: [door("Up")] }),
+      refused(
+        "foundry_error",
+        /shows: region Up \(\w+\) created; behavior of the region Up teleportToken \(\w+\) created; behavior of the region Down teleportToken \(\w+\) changed \(system\.destinations, flags\.foundry-mcp\.pending\)\. Running/
+      )
+    );
+  });
+
+  it("reports nothing unapplied when Foundry stores the destination of a new behavior relative to it", async () => {
+    // On Foundry 14.370 a creation was seen to keep the UUID it is given, and an update to store it relative to the
+    // behavior. Either spelling names the same region, whichever a creation stores.
+    world.control.filterDocumentData = (document: string, source: Record<string, any>) => {
+      if (document !== "Region") return;
+      for (const behavior of source.behaviors) {
+        behavior.system.destinations = behavior.system.destinations.map(
+          (uuid: string) => `..${uuid.split(".").at(-1)}`
+        );
+      }
+    };
+    const pair = { levels: ["upper"], regions: [door("East", { region: "West" }), door("West", { region: "East" })] };
+    const result = await sync(pair);
+    assert.deepEqual(storedDestinations("East"), [`..${named("West")[0].id}`]);
+    assert.deepEqual(
+      result.regions.map((region: any) => region.behaviors[0].unapplied),
+      [[], []]
+    );
+    const before = writes();
+    assert.deepEqual([(await sync(pair)).updated, writes()], [0, before]);
   });
 
   it("takes a destination by the UUID of a region, of this scene or another, a region made by hand too", async () => {
@@ -639,9 +848,9 @@ describe("sync_regions and what it refuses", () => {
       /^regions\[0\]\.behaviors\[0\]: No such field: system\.twice\./
     ],
     [
-      "two behaviors of one name",
+      "two behaviors of one type and name",
       { regions: [{ ...good, behaviors: [{ type: "pauseGame" }, { type: "pauseGame" }] }] },
-      /^regions\[0\]\.behaviors\[0\] and regions\[0\]\.behaviors\[1\] are both named "pauseGame"\. The sync finds a behavior of a region by its name/
+      /^regions\[0\]\.behaviors\[0\] and regions\[0\]\.behaviors\[1\] are both the behavior pauseGame "pauseGame"\. The sync finds a behavior of a region by its type and its name/
     ]
   ];
   for (const [what, args, message] of cases) {
@@ -764,7 +973,7 @@ describe("sync_regions with the regions get_scene returns", () => {
     assert.deepEqual(
       result.regions[0].behaviors.map((behavior: any) => [behavior.name, behavior.changed]),
       [
-        ["teleportToken", []],
+        ["", []],
         ["Halt", []]
       ]
     );

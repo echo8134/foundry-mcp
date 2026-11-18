@@ -602,6 +602,8 @@ describe("MCP tools", () => {
       /Behaviors someone added in\s+Foundry are never touched/,
       /a second run writes nothing/,
       /reported as pending/,
+      /take two calls: the first level set \(pending\), then the second, which completes the first/,
+      /found by its type and its name/,
       /executeScript and executeMacro are refused/
     ]) {
       assert.match(description, promise);
