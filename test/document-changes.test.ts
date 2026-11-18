@@ -280,7 +280,9 @@ describe("update_documents", () => {
           )
         );
       }
-      const result = await update({ uuid: "User.user1", data: { color: "#112233" } });
+      const { data } = await get("User.user1");
+      assert.equal(data.role, 4);
+      const result = await update({ uuid: "User.user1", data: { ...data, color: "#112233" } });
       assert.deepEqual(result.documents[0].changed, ["color"]);
     });
   });

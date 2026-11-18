@@ -86,8 +86,12 @@ const RULES = Object.freeze({
       }
       if (isPadded(data.password)) return PADDED;
       // Foundry logs a user out whose own role changed, and ends the sessions of a user whose password changed
-      // (client/documents/user.mjs:361-363, dist/database/documents/user.mjs _onUpdate).
-      const cutsOff = ["role", "password"].filter((key) => data[key] !== undefined);
+      // (client/documents/user.mjs:361-363, dist/database/documents/user.mjs _onUpdate). A given password is written
+      // on every call, and a role only when it is another one.
+      const cutsOff = [
+        ...(data.role !== undefined && data.role !== user._source.role ? ["role"] : []),
+        ...(data.password !== undefined ? ["password"] : [])
+      ];
       if (isSelf(user) && cutsOff.length > 0) {
         return `${user.name} is the user this bridge works as, and Foundry logs a user out when its ${cutsOff.join(" or ")} changes: the bridge would lose Foundry in the middle of the call. Change it in Foundry's own user configuration.`;
       }
