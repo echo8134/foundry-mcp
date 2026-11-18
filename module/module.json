@@ -1,7 +1,7 @@
 {
   "id": "foundry-mcp",
   "title": "Foundry MCP (local bridge)",
-  "description": "Connects the Gamemaster's client to a local MCP server on this machine so a model can work in the world. Reads, creates and updates scenes and draws walls and lights on them. Reads dnd5e actors and their tokens. Reads, creates, changes and deletes documents of every type, users included and settings excepted. Loopback only, fixed method list, no eval.",
+  "description": "Connects the Gamemaster's client to a local MCP server on this machine so a model can work in the world. Reads, creates and updates scenes and draws walls and lights on them. Reads dnd5e actors and their tokens. Reads, creates, changes and deletes documents of every type, users included and settings excepted. Loopback only, with a fixed list of methods. The module runs no code it receives, and it refuses to write code that Foundry runs by itself.",
   "version": "0.3.0",
   "compatibility": { "minimum": "14", "verified": "14" },
   "esmodules": ["scripts/main.mjs"]

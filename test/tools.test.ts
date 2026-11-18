@@ -1341,9 +1341,21 @@ describe("MCP tools for writing any document", () => {
         /A User is an account: the join page of a Foundry server can be reached by anyone who has its address/,
         tool
       );
-      assert.match(description, /role 4 makes a Gamemaster/, tool);
+      assert.match(description, /Role 3 \(Assistant GM\) and role 4 \(Gamemaster\) both count as a Gamemaster/, tool);
+      assert.match(description, /a user's permissions give or take single rights by name whatever the role says/, tool);
       assert.match(description, /ownership decides which players see and change a document/, tool);
-      assert.match(description, /a ChatMessage is shown to every connected player the moment it is created/, tool);
+      assert.match(description, /A ChatMessage is shown to every connected player the moment it is created/, tool);
+      assert.match(
+        description,
+        /The command of a Macro of the type script is code: it runs in the browser of whoever runs the macro/,
+        tool
+      );
+      assert.match(description, /Some modules run code they find in flags/, tool);
+      assert.match(
+        description,
+        /Code that Foundry runs by itself is not written at all: a RegionBehavior of the type executeScript or executeMacro is not created/,
+        tool
+      );
       assert.match(description, /A Setting .*not written by this tool/, tool);
     }
     assert.match(TOOLS.create_documents.description, /A new User needs a password that is not blank/);

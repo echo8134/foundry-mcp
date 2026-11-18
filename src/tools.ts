@@ -282,11 +282,18 @@ const SPECIAL_TOOLS =
   "and delete_walls, sync_lights, ensure_scene.";
 
 const HIGH_STAKES =
-  "Three kinds of write reach past the document. A User is an account: the join page of a Foundry server can be " +
-  "reached by anyone who has its address, so every user needs a password, and role 4 makes a Gamemaster, who can do " +
-  "anything in the world. ownership decides which players see and change a document (by user id, and default: 0 " +
-  "none, 1 limited, 2 observer, 3 owner): a wrong level shows players what the Gamemaster prepared in secret. And a " +
-  "ChatMessage is shown to every connected player the moment it is created, unless it has whisper.";
+  "Some writes reach past the document. A User is an account: the join page of a Foundry server can be reached by " +
+  "anyone who has its address, so every user needs a password. Role 3 (Assistant GM) and role 4 (Gamemaster) both " +
+  "count as a Gamemaster, who can do anything in the world, and a user's permissions give or take single rights " +
+  "by name whatever the role says, such as MACRO_SCRIPT (to write script macros) and FILES_UPLOAD. ownership decides " +
+  "which players see and change a document (by user id, and default: 0 none, 1 limited, 2 observer, 3 owner): a " +
+  "wrong level shows players what the Gamemaster prepared in secret. A ChatMessage is shown to every connected " +
+  "player the moment it is created, unless it has whisper. The command of a Macro of the type script is code: it " +
+  "runs in the browser of whoever runs the macro, a player's too, and a user's hotbar puts macros under that user's " +
+  "number keys. Some modules run code they find in flags, an item macro for example, so a flag written for such a " +
+  "module can be code as well. Code that Foundry runs by itself is not written at all: a RegionBehavior of the type " +
+  "executeScript or executeMacro is not created, alone or inside a region or a scene, its source or its macro is not " +
+  "changed, and neither is the command of a macro that such a behavior names. The Gamemaster does these in Foundry.";
 
 const imageResultSchema = z.object({
   mimeType: z.string(),
