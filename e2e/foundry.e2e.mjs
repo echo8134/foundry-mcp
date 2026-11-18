@@ -2038,6 +2038,506 @@ try {
       .catch((e) => console.log(`cleanup: item actor folder delete failed: ${e.message}`));
   }
 
+  const documentFolder = `foundry-mcp e2e documents ${Date.now()}`;
+  const worldPack = { label: `foundry-mcp e2e pack ${Date.now()}`, id: null };
+  const e2eUser = `foundry-mcp e2e user ${Date.now()}`;
+  try {
+    await check("the server's list of document types is the running Foundry's own", async () => {
+      const { tools } = await client.listTools();
+      const listed = tools.find((t) => t.name === "list_documents").inputSchema.properties.type.enum;
+      same([...listed].sort(), await page.evaluate(() => [...CONST.ALL_DOCUMENT_TYPES].sort()), "document types");
+    });
+
+    await check("get_schema answers for every document type, with its types and a field tree", async () => {
+      // The types Foundry's own type field takes for each class (common/data/fields.mjs:4291-4295).
+      const classes = await page.evaluate(() =>
+        CONST.ALL_DOCUMENT_TYPES.map((name) => {
+          const cls = CONFIG[name].documentClass;
+          const typed = cls.schema.fields.type instanceof foundry.data.fields.DocumentTypeField;
+          const creatable = (type) => type !== "base" || cls.metadata.baseTypeAllowed === true;
+          return { name, types: typed ? cls.TYPES.filter(creatable) : null };
+        })
+      );
+      for (const { name, types } of classes) {
+        const listed = await tool(client, "get_schema", { document: name });
+        if (types) same(listed.types, types, `${name} types`);
+        // A typed document none of whose types can be created has no tree to ask for.
+        if (types?.length === 0) continue;
+        const tree = types ? await tool(client, "get_schema", { document: name, type: types[0] }) : listed;
+        assert(tree.fields && typeof tree.fields === "object", `${name}: no field tree in ${JSON.stringify(tree)}`);
+      }
+      const pageText = await tool(client, "get_schema", {
+        document: "JournalEntryPage",
+        type: "text",
+        path: "text.content"
+      });
+      same(pageText.fields, "html", "the content of a text page");
+    });
+
+    const content = "<p class='lair' style=\"color: red\">Cold<br />halls &mdash; dark</p>";
+    let folderId;
+    let entry;
+    let pageUuid;
+    await check(
+      "create_documents creates a folder and a journal entry with a text page in it, flagged as bridge-made",
+      async () => {
+        const folder = await tool(client, "create_documents", {
+          type: "Folder",
+          documents: [{ name: documentFolder, type: "JournalEntry" }]
+        });
+        same(
+          [folder.created, folder.documents[0].type, folder.documents[0].unapplied],
+          [1, "JournalEntry", []],
+          "folder"
+        );
+        folderId = folder.documents[0].id;
+        const result = await tool(client, "create_documents", {
+          type: "JournalEntry",
+          documents: [
+            { name: "e2e lore", folder: folderId, pages: [{ name: "Halls", type: "text", text: { content } }] }
+          ]
+        });
+        same(
+          [result.requested, result.created, result.documents[0].name, result.documents[0].unapplied],
+          [1, 1, "e2e lore", []],
+          "result"
+        );
+        entry = result.documents[0];
+        const stored = await page.evaluate((uuid) => {
+          const made = fromUuidSync(uuid);
+          const [first] = made.pages.contents;
+          return {
+            managed: made.flags["foundry-mcp"]?.managed === true,
+            folder: made.folder?.name ?? null,
+            pages: made.pages.size,
+            page: [first.name, first.type, first.flags["foundry-mcp"]?.managed === true],
+            content: first.text.content,
+            pageUuid: first.uuid
+          };
+        }, entry.uuid);
+        same(
+          [stored.managed, stored.folder, stored.pages, stored.page],
+          [true, documentFolder, 1, ["Halls", "text", true]],
+          "stored"
+        );
+        assert(stored.content !== content, "the server stored the page as it was given, so the test shows nothing");
+        pageUuid = stored.pageUuid;
+      }
+    );
+
+    await check("get_document reads the entry and its page back, and list_documents finds both", async () => {
+      const read = await tool(client, "get_document", { uuid: entry.uuid });
+      same(
+        [read.documentName, read.id, read.name, read.parent, read.pack, read.folder, read.managed],
+        ["JournalEntry", entry.id, "e2e lore", null, null, [documentFolder], true],
+        "entry"
+      );
+      same(["pages" in read.data, read.data.folder, read.data.name], [false, folderId, "e2e lore"], "entry data");
+      same(
+        read.embedded.JournalEntryPage,
+        [{ uuid: pageUuid, id: pageUuid.split(".").at(-1), name: "Halls", type: "text" }],
+        "pages"
+      );
+      const readPage = await tool(client, "get_document", { uuid: pageUuid });
+      same(
+        [readPage.documentName, readPage.type, readPage.parent, "folder" in readPage],
+        ["JournalEntryPage", "text", entry.uuid, false],
+        "page"
+      );
+      assert(readPage.data.text.content.includes("Cold"), readPage.data.text.content);
+      const listed = await tool(client, "list_documents", { type: "JournalEntry", folder: [documentFolder] });
+      same(
+        listed.documents,
+        [{ uuid: entry.uuid, id: entry.id, name: "e2e lore", folder: [documentFolder], managed: true }],
+        "listed entry"
+      );
+      same(listed.folders, [{ id: folderId, path: [documentFolder] }], "listed folders");
+      assert(Array.isArray(listed.packs), `no packs in ${JSON.stringify(Object.keys(listed))}`);
+      const pages = await tool(client, "list_documents", {
+        type: "JournalEntryPage",
+        parent: entry.uuid,
+        name: "hALL"
+      });
+      same(
+        pages.documents,
+        [{ uuid: pageUuid, id: pageUuid.split(".").at(-1), name: "Halls", type: "text", managed: true }],
+        "listed page"
+      );
+      await assertRejects(
+        tool(client, "list_documents", { type: "JournalEntryPage" }),
+        /A world has no JournalEntryPage documents of its own\. Pass parent: the UUID of the JournalEntry/
+      );
+    });
+
+    await check(
+      "update_documents writes nothing for data read with get_document and passed back, the page's HTML included",
+      async () => {
+        const before = await page.evaluate((uuid) => JSON.stringify(fromUuidSync(uuid).toObject()), entry.uuid);
+        for (const uuid of [entry.uuid, pageUuid]) {
+          const { data } = await tool(client, "get_document", { uuid });
+          const result = await tool(client, "update_documents", { documents: [{ uuid, data }] });
+          same(result.documents, [{ uuid, changed: [], unapplied: [] }], `round trip of ${uuid}`);
+        }
+        const given = await tool(client, "update_documents", {
+          documents: [{ uuid: pageUuid, data: { text: { content } } }]
+        });
+        same(given.documents[0].changed, [], "the page text as it was given at first");
+        same(
+          await page.evaluate((uuid) => JSON.stringify(fromUuidSync(uuid).toObject()), entry.uuid),
+          before,
+          "stored data"
+        );
+      }
+    );
+
+    await check(
+      "update_documents changes the page text and a flag, and the same call again changes nothing",
+      async () => {
+        const change = {
+          documents: [
+            { uuid: pageUuid, data: { text: { content: content.replace("Cold", "Warm") } } },
+            { uuid: entry.uuid, data: { name: "e2e lore, revised", flags: { world: { note: "x", keep: 1 } } } }
+          ]
+        };
+        const result = await tool(client, "update_documents", change);
+        same(
+          result.documents,
+          [
+            { uuid: pageUuid, changed: ["text.content"], unapplied: [] },
+            { uuid: entry.uuid, changed: ["name", "flags.world.note", "flags.world.keep"], unapplied: [] }
+          ],
+          "changed"
+        );
+        const stored = await page.evaluate((uuid) => {
+          const made = fromUuidSync(uuid);
+          return [made.name, made.pages.contents[0].text.content, made.flags.world];
+        }, entry.uuid);
+        same([stored[0], stored[2]], ["e2e lore, revised", { note: "x", keep: 1 }], "stored");
+        assert(stored[1].includes("Warm"), stored[1]);
+        const again = await tool(client, "update_documents", change);
+        same(
+          again.documents.map((one) => [one.changed, one.unapplied]),
+          [
+            [[], []],
+            [[], []]
+          ],
+          "repeat"
+        );
+        const removed = await tool(client, "update_documents", {
+          documents: [{ uuid: entry.uuid, remove: ["flags.world.note"] }]
+        });
+        same(removed.documents[0], { uuid: entry.uuid, changed: ["flags.world.note"], unapplied: [] }, "removed");
+        same(
+          await page.evaluate((uuid) => fromUuidSync(uuid).flags.world, entry.uuid),
+          { keep: 1 },
+          "flags after the removal"
+        );
+      }
+    );
+
+    await check("update_documents refuses what it cannot store before anything is written", async () => {
+      const refusals = [
+        [{ data: { colour: "red" } }, /No such field: colour/],
+        [
+          { data: { pages: [{ name: "New" }] } },
+          /pages cannot be given: it holds the embedded documents of the JournalEntry/
+        ],
+        [{ data: { sort: "5" } }, /sort: "5" would be stored as 5/],
+        [{ data: { flags: { "foundry-mcp": { managed: false } } } }, /flags\.foundry-mcp cannot be given/],
+        [{ remove: ["name"] }, /Not an entry that can be removed: name/]
+      ];
+      for (const [change, message] of refusals) {
+        await assertRejects(
+          tool(client, "update_documents", {
+            documents: [
+              { uuid: pageUuid, data: { name: "must not be written" } },
+              { uuid: entry.uuid, ...change }
+            ]
+          }),
+          message
+        );
+      }
+      await assertRejects(
+        tool(client, "update_documents", { documents: [{ uuid: pageUuid, data: { type: "image" } }] }),
+        /is of the type text, and Foundry cannot change the type of a document/
+      );
+      same(await page.evaluate((uuid) => fromUuidSync(uuid).name, pageUuid), "Halls", "the page's name");
+    });
+
+    await check(
+      "create_documents creates a page in the entry, and delete_documents deletes it by its own UUID",
+      async () => {
+        const made = await tool(client, "create_documents", {
+          type: "JournalEntryPage",
+          parent: entry.uuid,
+          documents: [{ name: "Appendix" }]
+        });
+        same([made.created, made.documents[0].type, made.documents[0].unapplied], [1, "text", []], "page");
+        same(await page.evaluate((uuid) => fromUuidSync(uuid).pages.size, entry.uuid), 2, "pages");
+        const gone = await tool(client, "delete_documents", {
+          uuids: [made.documents[0].uuid, "JournalEntry.nothinghere00000"]
+        });
+        same(gone, { deleted: 1, documents: [{ uuid: made.documents[0].uuid, name: "Appendix" }] }, "deleted");
+        same((await tool(client, "delete_documents", { uuids: [made.documents[0].uuid] })).deleted, 0, "repeat");
+      }
+    );
+
+    await check("a playlist with a sound is created and deleted with it", async () => {
+      const made = await tool(client, "create_documents", {
+        type: "Playlist",
+        documents: [
+          { name: `${documentFolder} playlist`, sounds: [{ name: "e2e dice", path: "sounds/dice.wav", volume: 0.25 }] }
+        ]
+      });
+      same([made.created, made.documents[0].unapplied], [1, []], "playlist");
+      const { uuid } = made.documents[0];
+      const read = await tool(client, "get_document", { uuid });
+      same(
+        read.embedded.PlaylistSound.map((sound) => sound.name),
+        ["e2e dice"],
+        "sounds"
+      );
+      const sound = await tool(client, "get_document", { uuid: read.embedded.PlaylistSound[0].uuid });
+      same([sound.data.path, sound.data.volume, sound.managed], ["sounds/dice.wav", 0.25, true], "sound");
+      same((await tool(client, "delete_documents", { uuids: [uuid] })).deleted, 1, "deleted");
+      same(await page.evaluate((id) => game.playlists.has(id), made.documents[0].id), false, "playlist still there");
+    });
+
+    await check("a chat message is posted, listed as the newest, and deleted", async () => {
+      const made = await tool(client, "create_documents", {
+        type: "ChatMessage",
+        documents: [{ content: "<p>foundry-mcp e2e: the door creaks</p>", speaker: { alias: "e2e" } }]
+      });
+      same([made.created, made.documents[0].unapplied, "name" in made.documents[0]], [1, [], false], "message");
+      const { uuid, id } = made.documents[0];
+      const listed = await tool(client, "list_documents", { type: "ChatMessage" });
+      same(listed.documents.at(-1), { uuid, id, type: "base", managed: true }, "newest message");
+      same((await tool(client, "delete_documents", { uuids: [uuid] })).deleted, 1, "deleted");
+      same(await page.evaluate((messageId) => game.messages.has(messageId), id), false, "message still there");
+    });
+
+    await check("a user is created only with a password, which is never read back, and is deleted again", async () => {
+      await assertRejects(
+        tool(client, "create_documents", { type: "User", documents: [{ name: e2eUser, role: 1 }] }),
+        /A new user needs a password that is not blank/
+      );
+      same(
+        await page.evaluate((name) => game.users.getName(name) === undefined, e2eUser),
+        true,
+        "no user after the refusal"
+      );
+      const password = randomBytes(18).toString("base64url");
+      const made = await tool(client, "create_documents", {
+        type: "User",
+        documents: [{ name: e2eUser, role: 1, password }]
+      });
+      same([made.created, made.documents[0].unapplied], [1, []], "user");
+      const { uuid } = made.documents[0];
+      const read = await tool(client, "get_document", { uuid });
+      same(["password" in read.data, "passwordSalt" in read.data, read.data.role], [false, false, 1], "read user");
+      assert(!JSON.stringify(read).includes(password), "get_document returned the password");
+      assert(
+        !(await page.evaluate((id) => JSON.stringify(fromUuidSync(id).toObject()), uuid)).includes(password),
+        "the page holds the password as given"
+      );
+      const next = randomBytes(18).toString("base64url");
+      const changed = await tool(client, "update_documents", { documents: [{ uuid, data: { password: next } }] });
+      same(changed.documents, [{ uuid, changed: ["password"], unapplied: [] }], "password change");
+      await assertRejects(
+        tool(client, "update_documents", { documents: [{ uuid, data: { password: "" } }] }),
+        /cannot be removed or made blank/
+      );
+      const self = await page.evaluate(() => game.user.uuid);
+      await assertRejects(
+        tool(client, "delete_documents", { uuids: [self], handMade: true }),
+        /is the user this bridge works as/
+      );
+      same((await tool(client, "delete_documents", { uuids: [uuid] })).deleted, 1, "deleted");
+      same(await page.evaluate((name) => game.users.getName(name) === undefined, e2eUser), true, "user gone");
+    });
+
+    await check("delete_documents deletes a hand-made document only with handMade", async () => {
+      const uuid = await page.evaluate(
+        async (folder) => (await JournalEntry.implementation.create({ name: "e2e by hand", folder })).uuid,
+        folderId
+      );
+      const read = await tool(client, "get_document", { uuid });
+      same(read.managed, false, "managed");
+      await assertRejects(
+        tool(client, "delete_documents", { uuids: [entry.uuid, uuid] }),
+        /These documents were not made by this bridge: e2e by hand .*Pass handMade: true/
+      );
+      same(
+        await page.evaluate((ids) => ids.map((id) => fromUuidSync(id) !== null), [entry.uuid, uuid]),
+        [true, true],
+        "both still there"
+      );
+      same((await tool(client, "delete_documents", { uuids: [uuid], handMade: true })).deleted, 1, "deleted");
+    });
+
+    await check(
+      "deleting a folder moves its documents and every folder below it to its parent, as delete_documents says",
+      async () => {
+        const folder = async (name, parent) =>
+          (
+            await tool(client, "create_documents", {
+              type: "Folder",
+              documents: [{ name, type: "JournalEntry", folder: parent }]
+            })
+          ).documents[0];
+        const a = await folder("e2e a", folderId);
+        const b = await folder("e2e b", a.id);
+        const c = await folder("e2e c", b.id);
+        const made = await tool(client, "create_documents", {
+          type: "JournalEntry",
+          documents: [
+            { name: "e2e in a", folder: a.id },
+            { name: "e2e in c", folder: c.id }
+          ]
+        });
+        same((await tool(client, "delete_documents", { uuids: [a.uuid] })).deleted, 1, "deleted");
+        const after = await page.evaluate(
+          (ids) => ({
+            a: game.folders.has(ids.a),
+            b: game.folders.get(ids.b)?.folder?.id ?? null,
+            c: game.folders.get(ids.c)?.folder?.id ?? null,
+            inA: game.journal.get(ids.inA)?.folder?.id ?? null,
+            inC: game.journal.get(ids.inC)?.folder?.id ?? null
+          }),
+          { a: a.id, b: b.id, c: c.id, inA: made.documents[0].id, inC: made.documents[1].id }
+        );
+        same(after, { a: false, b: folderId, c: folderId, inA: folderId, inC: c.id }, "where everything went");
+      }
+    );
+
+    await check("a world setting can be read and is not written", async () => {
+      const listed = await tool(client, "list_documents", { type: "Setting" });
+      assert(listed.total > 0, "the world stores no setting to read");
+      const { uuid } = listed.documents[0];
+      const read = await tool(client, "get_document", { uuid });
+      same([read.documentName, typeof read.data.key], ["Setting", "string"], "setting");
+      await assertRejects(
+        tool(client, "update_documents", { documents: [{ uuid, data: { value: read.data.value } }] }),
+        /These tools write no Setting/
+      );
+      await assertRejects(
+        tool(client, "delete_documents", { uuids: [uuid], handMade: true }),
+        /These tools write no Setting/
+      );
+    });
+
+    const pack = await page.evaluate(async (label) => {
+      try {
+        const made = await foundry.documents.collections.CompendiumCollection.createCompendium({
+          label,
+          type: "JournalEntry"
+        });
+        return { id: made.collection };
+      } catch (error) {
+        return { error: error.message };
+      }
+    }, worldPack.label);
+    if (!pack.id) {
+      console.log(
+        `SKIP the compendium pack checks: this Foundry made no world compendium from the page (${pack.error})`
+      );
+    } else {
+      worldPack.id = pack.id;
+      const setLock = async (locked) => {
+        await page.evaluate((id, lock) => game.packs.get(id).configure({ locked: lock }), pack.id, locked);
+        await eventually(
+          () => page.evaluate((id, lock) => game.packs.get(id).locked === lock, pack.id, locked),
+          `the pack to be ${locked ? "locked" : "unlocked"}`
+        );
+      };
+      let packed;
+      await check("a document is created in a world compendium, listed from its index and read from it", async () => {
+        const made = await tool(client, "create_documents", {
+          type: "JournalEntry",
+          pack: pack.id,
+          documents: [{ name: "e2e packed", pages: [{ name: "Inside" }] }]
+        });
+        same([made.created, made.documents[0].unapplied], [1, []], "created");
+        packed = made.documents[0];
+        assert(packed.uuid.startsWith(`Compendium.${pack.id}.JournalEntry.`), packed.uuid);
+        const listed = await tool(client, "list_documents", { type: "JournalEntry", pack: pack.id });
+        same(
+          listed.documents,
+          [{ uuid: packed.uuid, id: packed.id, name: "e2e packed", folder: [], managed: true }],
+          "index"
+        );
+        same(
+          listed.packs.filter((one) => one.id === pack.id),
+          [{ id: pack.id, title: worldPack.label, locked: false }],
+          "the pack among the packs of its type"
+        );
+        const read = await tool(client, "get_document", { uuid: packed.uuid });
+        same([read.pack, read.locked, read.embedded.JournalEntryPage.length], [pack.id, false, 1], "read");
+      });
+
+      await check(
+        "a locked compendium refuses create, update and delete, and takes them again once unlocked",
+        async () => {
+          await setLock(true);
+          const locked = /in the compendium pack .*which is locked\. The Gamemaster unlocks a pack in Foundry/;
+          await assertRejects(
+            tool(client, "update_documents", {
+              documents: [{ uuid: packed.uuid, data: { name: "must not be written" } }]
+            }),
+            locked
+          );
+          await assertRejects(
+            tool(client, "create_documents", {
+              type: "JournalEntry",
+              pack: pack.id,
+              documents: [{ name: "must not exist" }]
+            }),
+            locked
+          );
+          await assertRejects(tool(client, "delete_documents", { uuids: [packed.uuid] }), locked);
+          same((await tool(client, "get_document", { uuid: packed.uuid })).locked, true, "locked as get_document says");
+          const index = await page.evaluate(
+            async (id) => (await game.packs.get(id).getIndex()).map((one) => one.name),
+            pack.id
+          );
+          same(index, ["e2e packed"], "the pack after the refusals");
+          await setLock(false);
+          const renamed = await tool(client, "update_documents", {
+            documents: [{ uuid: packed.uuid, data: { name: "e2e repacked" } }]
+          });
+          same(renamed.documents, [{ uuid: packed.uuid, changed: ["name"], unapplied: [] }], "renamed");
+          same((await tool(client, "delete_documents", { uuids: [packed.uuid] })).deleted, 1, "deleted");
+        }
+      );
+    }
+
+    await check("delete_documents deletes the entry with its page", async () => {
+      const gone = await tool(client, "delete_documents", { uuids: [pageUuid, entry.uuid] });
+      same(gone, { deleted: 1, documents: [{ uuid: entry.uuid, name: "e2e lore, revised" }] }, "deleted");
+      same(await page.evaluate((uuid) => fromUuidSync(uuid), entry.uuid), null, "the entry");
+    });
+  } finally {
+    await page
+      .evaluate(
+        async (folderName, packId, userName) => {
+          const top = game.folders.find((f) => f.type === "JournalEntry" && f.name === folderName && !f.folder);
+          await top?.delete({ deleteSubfolders: true, deleteContents: true });
+          for (const playlist of game.playlists.filter((one) => one.name.startsWith(folderName)))
+            await playlist.delete();
+          for (const message of game.messages.filter((one) => one.content.includes("foundry-mcp e2e:")))
+            await message.delete();
+          await game.users.getName(userName)?.delete();
+          const pack = packId ? game.packs.get(packId) : null;
+          if (pack?.locked) await pack.configure({ locked: false });
+          await pack?.deleteCompendium();
+        },
+        documentFolder,
+        worldPack.id,
+        e2eUser
+      )
+      .catch((e) => console.log(`cleanup: generic documents delete failed: ${e.message}`));
+  }
+
   await check(
     "with a wrong token in the page the module refuses the server and tool calls fail with no bridge",
     async () => {
