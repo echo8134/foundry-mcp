@@ -213,6 +213,35 @@ describe("sync_regions and the stairs between levels", () => {
     assert.deepEqual(await destinationsOf("Down"), [named("Up")[0].uuid]);
   });
 
+  it("keeps a name waiting when a hook refuses the creation of its region, and leads on the others of the call", async () => {
+    await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" }, { region: "Loft" })] });
+    world.control.vetoDocument = (document: string, data: Record<string, any>) =>
+      document === "Region" && data.name === "Up";
+    const made = await sync({ levels: ["upper"], regions: [door("Up"), door("Loft")] });
+    assert.deepEqual(
+      [made.regions.map((region: any) => region.created), made.resolved.map((one: any) => one.names)],
+      [[false, true], [["Loft"]]]
+    );
+    assert.deepEqual(
+      [await destinationsOf("Down"), behaviorOf("Down").flags],
+      [[named("Loft")[0].uuid, { region: "Up" }], waitingFor("Up")]
+    );
+
+    const vetoed = await sync({ levels: ["upper"], regions: [door("Up"), door("Loft")] });
+    assert.deepEqual(
+      [vetoed.resolved, await destinationsOf("Down")],
+      [undefined, [named("Loft")[0].uuid, { region: "Up" }]]
+    );
+
+    world.control.vetoDocument = null;
+    const later = await sync({ levels: ["upper"], regions: [door("Up"), door("Loft")] });
+    assert.deepEqual(
+      later.resolved.map((one: any) => one.names),
+      [["Up"]]
+    );
+    assert.deepEqual(await destinationsOf("Down"), [named("Loft")[0].uuid, named("Up")[0].uuid]);
+  });
+
   it("names a destination it led on when a later step of the call fails", async () => {
     await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
     world.addDocument("Region", { name: "Old", levels: ["upper"], flags: MANAGED }, { parent: scene });

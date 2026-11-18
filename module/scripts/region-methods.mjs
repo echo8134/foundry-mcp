@@ -49,9 +49,11 @@ import { runSteps, updatesOf, writtenBefore, writtenPart, wrote } from "./write-
  * @property {any} document the behavior
  * @property {import("./data-diff.mjs").Asked} write its destinations with the regions found, and the names still open
  * @property {string[]} names the names that lead to a region now
+ * @property {Pending[]} pending the names it waited for
+ * @property {(Pending & Target)[]} found the names that lead to a region now, each with the region
  */
 /** @typedef {{regions: RegionPlan[], deleted: any[], handPlaced: {id: string, name: string}[], waiting: WaitingPlan[]}} Plan */
-/** @typedef {{uuid: string, levels: number}} Target a region a name leads to, and how many levels it is on */
+/** @typedef {{id: string, uuid: string, levels: number}} Target a region a name leads to, and how many levels it is on */
 
 const PENDING_FLAG = `flags.${FLAG_SCOPE}.pending`;
 
@@ -143,10 +145,10 @@ function namedRegions(scene, claims, owned, levels) {
   return (name) => ({
     own: claims
       .filter((claim) => claim.name === name)
-      .map((claim) => ({ uuid: `${scene.uuid}.Region.${claim.id}`, levels: count(levels) })),
+      .map((claim) => ({ id: claim.id, uuid: `${scene.uuid}.Region.${claim.id}`, levels: count(levels) })),
     others: scene.regions
       .filter((region) => isManaged(region) && region.name === name && !owned.includes(region))
-      .map((region) => ({ uuid: region.uuid, levels: count(region.levels) }))
+      .map((region) => ({ id: region.id, uuid: region.uuid, levels: count(region.levels) }))
   });
 }
 
@@ -348,6 +350,29 @@ async function planRegion({ entry, where, document, id }, context) {
 }
 
 /**
+ * What a behavior that waits for regions by their names is to be written as, with the regions found for some of them.
+ * Null when none is found. Reads only.
+ * @param {any} region the region the behavior lies in
+ * @param {any} behavior
+ * @param {Pending[]} pending the names it waits for
+ * @param {(Pending & Target)[]} found
+ * @returns {Promise<WaitingPlan | null>}
+ */
+async function waitingPlan(region, behavior, pending, found) {
+  if (found.length === 0) return null;
+  const names = found.map((one) => one.region);
+  const stored = absoluteSystem(behavior);
+  const system = {};
+  for (const { field, uuid } of found) system[field] = [...new Set([...(system[field] ?? stored[field]), uuid])];
+  const at = `The ${behavior.type} behavior ${behavior.id} of the region ${region.name} waits for the region ${names.join(", ")}, which this call makes: `;
+  refuseRuled(rulesOf("RegionBehavior").update?.(behavior, { system }, []), at);
+  const kind = kindOf("RegionBehavior");
+  const write = await planUpdate(kind, behavior, { system }, { where: at, same: sameReferences(behavior) });
+  const open = pending.filter((one) => !found.some((hit) => hit.field === one.field && hit.region === one.region));
+  return { region, document: behavior, write: withPending(write, open), names, pending, found };
+}
+
+/**
  * The behaviors of the scene that wait for a region by its name (see pendingOf) and that the call writes nothing else
  * of, each with the regions its names lead to now. A name leads on once exactly one bridge-made region of the scene
  * has it and the behavior's type takes that region. Until then it stays as it is. Reads only.
@@ -358,7 +383,6 @@ async function planRegion({ entry, where, document, id }, context) {
  * @returns {Promise<WaitingPlan[]>}
  */
 async function planWaiting(scene, plans, deleted, named) {
-  const kind = kindOf("RegionBehavior");
   const written = new Set(
     plans.flatMap((plan) => [...(plan.behaviors ?? []).map((behavior) => behavior.document), ...plan.stale])
   );
@@ -371,22 +395,31 @@ async function planWaiting(scene, plans, deleted, named) {
         const [target, ...more] = [...own, ...others];
         const refusal = BEHAVIOR_CHECKS[behavior.type]?.target;
         return target && more.length === 0 && !refusal?.({ ...target, label: one.region })
-          ? [{ ...one, uuid: target.uuid }]
+          ? [{ ...one, ...target }]
           : [];
       });
-      if (found.length === 0) continue;
-      const names = found.map((one) => one.region);
-      const stored = absoluteSystem(behavior);
-      const system = {};
-      for (const { field, uuid } of found) system[field] = [...new Set([...(system[field] ?? stored[field]), uuid])];
-      const at = `The ${behavior.type} behavior ${behavior.id} of the region ${region.name} waits for the region ${names.join(", ")}, which this call makes: `;
-      refuseRuled(rulesOf("RegionBehavior").update?.(behavior, { system }, []), at);
-      const write = await planUpdate(kind, behavior, { system }, { where: at, same: sameReferences(behavior) });
-      const open = pending.filter((one) => !found.some((hit) => hit.field === one.field && hit.region === one.region));
-      waiting.push({ region, document: behavior, write: withPending(write, open), names });
+      const plan = await waitingPlan(region, behavior, pending, found);
+      if (plan) waiting.push(plan);
     }
   }
   return waiting;
+}
+
+/**
+ * The waiting behaviors as they are to be written once the regions of the call are created. Foundry creates nothing,
+ * and throws nothing, for a region a hook refuses: a name of such a region stays open.
+ * @param {any} scene
+ * @param {WaitingPlan[]} waiting
+ */
+async function landedWaiting(scene, waiting) {
+  const landed = [];
+  for (const plan of waiting) {
+    const found = plan.found.filter((one) => scene.regions.has(one.id));
+    const kept =
+      found.length === plan.found.length ? plan : await waitingPlan(plan.region, plan.document, plan.pending, found);
+    if (kept) landed.push(kept);
+  }
+  return landed;
 }
 
 /**
@@ -449,7 +482,7 @@ function behaviorOutcome(plan, region, before) {
     name: behavior._source.name,
     type: behavior.type,
     created: !plan.document,
-    ...writeOutcome(plan.write, before.get(plan) ?? {}, behavior._source),
+    ...writeOutcome(plan.write, before.get(plan.document) ?? {}, behavior._source),
     ...pending
   };
 }
@@ -462,7 +495,7 @@ function regionOutcome(plan, scene, before) {
     id: region.id,
     name: region.name,
     created: !plan.document,
-    ...writeOutcome(plan.write, before.get(plan) ?? {}, region._source),
+    ...writeOutcome(plan.write, before.get(plan.document) ?? {}, region._source),
     ...(plan.behaviors && {
       behaviors: plan.behaviors.map((behavior) => behaviorOutcome(behavior, region, before)),
       removedBehaviors: plan.stale.filter((behavior) => !region.behaviors.has(behavior.id)).length
@@ -484,7 +517,7 @@ function resultOf(scene, plan, before) {
     type: waiting.document.type,
     region: { id: waiting.region.id, name: waiting.region.name },
     names: waiting.names,
-    ...writeOutcome(waiting.write, before.get(waiting), waiting.document._source)
+    ...writeOutcome(waiting.write, before.get(waiting.document), waiting.document._source)
   }));
   return {
     created: regions.filter((region) => region.created).length,
@@ -515,21 +548,18 @@ function describeWritten({ regions, resolved = [], deleted }) {
   ]);
 }
 
+const some = (list, send) => list.length > 0 && send(list);
+
 /**
- * The Foundry calls a plan takes, in their order: the new regions in one call, each with its behaviors, the changed
- * regions in one, then for each region that was there its new, its changed and its dropped behaviors, then the
- * behaviors that waited for a region of this call. Regions are deleted last, so that a call that fails earlier has
- * deleted none. A call that would send nothing is not made.
+ * The Foundry calls that write the regions of a plan, in their order: the new regions in one call, each with its
+ * behaviors, the changed regions in one, then for each region that was there its new, its changed and its dropped
+ * behaviors. A call that would send nothing is not made.
  */
-function stepsOf(scene, plan) {
+function regionSteps(scene, plan) {
   const Region = CONFIG.Region.documentClass;
   const Behavior = CONFIG.RegionBehavior.documentClass;
-  const some = (list, send) => list.length > 0 && send(list);
   const creations = plan.regions.filter((region) => !region.document);
   const changed = plan.regions.filter((region) => region.document);
-  const waitingIn = new Map();
-  for (const waiting of plan.waiting)
-    waitingIn.set(waiting.region, [...(waitingIn.get(waiting.region) ?? []), waiting]);
   return [
     {
       what: "creating the regions",
@@ -567,7 +597,20 @@ function stepsOf(scene, plan) {
             (ids) => Behavior.deleteDocuments(ids, { parent })
           )
       }
-    ]),
+    ])
+  ];
+}
+
+/**
+ * The Foundry calls that come after regionSteps: the behaviors that waited for a region of this call, then the
+ * deletion of regions, last so that a call that fails earlier has deleted none.
+ */
+function closingSteps(scene, plan) {
+  const Behavior = CONFIG.RegionBehavior.documentClass;
+  const waitingIn = new Map();
+  for (const waiting of plan.waiting)
+    waitingIn.set(waiting.region, [...(waitingIn.get(waiting.region) ?? []), waiting]);
+  return [
     ...[...waitingIn].map(([parent, waiting]) => ({
       what: `writing the destinations the region ${parent.name} waited for`,
       run: () => some(updatesOf(waiting), (updates) => Behavior.updateDocuments(updates, { parent }))
@@ -577,7 +620,7 @@ function stepsOf(scene, plan) {
       run: () =>
         some(
           plan.deleted.map((region) => region.id),
-          (ids) => Region.deleteDocuments(ids, { parent: scene })
+          (ids) => CONFIG.Region.documentClass.deleteDocuments(ids, { parent: scene })
         )
     }
   ];
@@ -591,7 +634,10 @@ function stepsOf(scene, plan) {
 export async function writeRegionSync(scene, plan) {
   const before = new Map();
   const existing = [...plan.regions, ...plan.regions.flatMap((region) => region.behaviors ?? []), ...plan.waiting];
-  for (const one of existing) if (one.document) before.set(one, one.document.toObject());
-  await runSteps(stepsOf(scene, plan), () => describeWritten(resultOf(scene, plan, before)));
-  return resultOf(scene, plan, before);
+  for (const { document } of existing) if (document) before.set(document, document.toObject());
+  const describe = (written) => () => describeWritten(resultOf(scene, written, before));
+  await runSteps(regionSteps(scene, plan), describe(plan));
+  const landed = { ...plan, waiting: await landedWaiting(scene, plan.waiting) };
+  await runSteps(closingSteps(scene, landed), describe(landed));
+  return resultOf(scene, landed, before);
 }
