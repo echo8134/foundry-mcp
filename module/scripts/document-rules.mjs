@@ -21,6 +21,12 @@ const OPEN_JOIN_PAGE =
 
 const NO_SALT = "passwordSalt cannot be given: Foundry makes the salt itself when it stores a password.";
 
+/** Foundry trims a text it stores (common/data/fields.mjs:1764), so such a password would not be the one given. */
+const PADDED =
+  "The password may not begin or end with a space: Foundry would store it without, and the user could not log in with the password as given.";
+
+const isPadded = (password) => typeof password === "string" && password !== password.trim();
+
 const isSelf = (user) => user.id === game.user.id;
 
 /** @type {Readonly<Record<string, Rules>>} */
@@ -34,7 +40,8 @@ const RULES = Object.freeze({
     secret: ["password", "passwordSalt"],
     create: (data) => {
       if (data.passwordSalt !== undefined) return NO_SALT;
-      return isBlank(data.password) ? `A new user needs a password that is not blank. ${OPEN_JOIN_PAGE}` : null;
+      if (isBlank(data.password)) return `A new user needs a password that is not blank. ${OPEN_JOIN_PAGE}`;
+      return isPadded(data.password) ? PADDED : null;
     },
     update: (user, data, remove) => {
       if (data.passwordSalt !== undefined) return NO_SALT;
@@ -42,6 +49,7 @@ const RULES = Object.freeze({
       if (unset || (data.password !== undefined && isBlank(data.password))) {
         return `The password of ${user.name} cannot be removed or made blank. ${OPEN_JOIN_PAGE} Give another password, or leave password out to keep the one it has.`;
       }
+      if (isPadded(data.password)) return PADDED;
       // Foundry logs a user out whose own role changed, and ends the sessions of a user whose password changed
       // (client/documents/user.mjs:361-363, dist/database/documents/user.mjs _onUpdate).
       const cutsOff = ["role", "password"].filter((key) => data[key] !== undefined);

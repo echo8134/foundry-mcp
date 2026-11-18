@@ -127,12 +127,17 @@ async function fromUuid(uuid) {
 /** The document at a UUID, or null: for a deletion, which ignores what is not there. */
 export const findDocument = fromUuid;
 
-export async function resolveDocument(uuid, where = "") {
+/**
+ * @param {string} uuid
+ * @param {{where?: string, write?: boolean}} [options] `where` names the entry of the request, and `write` says that
+ *   the call is one that writes, which a refusal ends before anything is written
+ */
+export async function resolveDocument(uuid, { where = "", write = false } = {}) {
   const document = await fromUuid(uuid);
   if (document) return document;
   throw new MethodError(
     "not_found",
-    `${where}Nothing exists at the UUID ${uuid}. list_documents returns the UUIDs of the documents of a type.`
+    `${where}Nothing exists at the UUID ${uuid}.${write ? " Nothing was written." : ""} list_documents returns the UUIDs of the documents of a type.`
   );
 }
 
@@ -186,7 +191,7 @@ export async function targetOf({ type, parent: parentUuid, pack: packId }, { wri
     );
   }
   if (parentUuid !== undefined) {
-    const parent = await resolveDocument(parentUuid);
+    const parent = await resolveDocument(parentUuid, { write });
     const held = embeddedNamesOf(classOf(parent.documentName));
     if (!held.includes(type)) {
       const holds = held.length > 0 ? `It holds: ${held.join(", ")}.` : "It holds no embedded documents.";

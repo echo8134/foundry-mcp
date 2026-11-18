@@ -20,8 +20,10 @@ describe("method list", () => {
       {
         surface: 6,
         methods: [
+          "create_documents",
           "create_walls",
           "delete_actors",
+          "delete_documents",
           "delete_tokens",
           "delete_walls",
           "ensure_actor",
@@ -37,6 +39,7 @@ describe("method list", () => {
           "place_tokens",
           "sync_lights",
           "sync_walls",
+          "update_documents",
           "update_tokens"
         ]
       },
@@ -50,8 +53,10 @@ describe("method list", () => {
 
   it("gives each serialised method a time budget a few seconds below its tool's timeout", () => {
     assert.deepEqual(Object.keys(QUEUE_BUDGET_MS).sort(), [
+      "create_documents",
       "create_walls",
       "delete_actors",
+      "delete_documents",
       "delete_tokens",
       "delete_walls",
       "ensure_actor",
@@ -59,6 +64,7 @@ describe("method list", () => {
       "place_tokens",
       "sync_lights",
       "sync_walls",
+      "update_documents",
       "update_tokens"
     ]);
     for (const [name, budget] of Object.entries(QUEUE_BUDGET_MS)) {
@@ -69,6 +75,8 @@ describe("method list", () => {
     }
     assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.ensure_scene);
     assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.ensure_actor);
+    assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.create_documents);
+    assert.ok(timing.textureLoadMs < QUEUE_BUDGET_MS.update_documents);
     assert.ok(timing.textureLoadMs < TOOLS.get_scene_image.timeoutMs);
   });
 

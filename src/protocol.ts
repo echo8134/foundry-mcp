@@ -23,7 +23,10 @@ export const METHODS = [
   "ensure_actor",
   "delete_actors",
   "list_documents",
-  "get_document"
+  "get_document",
+  "create_documents",
+  "update_documents",
+  "delete_documents"
 ] as const;
 export type Method = (typeof METHODS)[number];
 

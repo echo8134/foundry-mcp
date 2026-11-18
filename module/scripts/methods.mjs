@@ -1,6 +1,14 @@
 import { getActor, listActors } from "./actor-methods.mjs";
 import { deleteActors, ensureActor, prepareActorDeletion, prepareEnsureActor } from "./actor-writes.mjs";
 import { getDocument, listDocuments } from "./document-methods.mjs";
+import {
+  createDocuments,
+  deleteDocuments,
+  prepareChanges,
+  prepareCreation,
+  prepareDeletion,
+  updateDocuments
+} from "./document-writes.mjs";
 import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
@@ -42,7 +50,10 @@ export const QUEUE_BUDGET_MS = {
   update_tokens: 25_000,
   delete_tokens: 25_000,
   ensure_actor: 85_000,
-  delete_actors: 25_000
+  delete_actors: 25_000,
+  create_documents: 85_000,
+  update_documents: 85_000,
+  delete_documents: 25_000
 };
 
 function scenePath(scene, folders) {
@@ -513,5 +524,8 @@ export const METHODS = Object.freeze({
   ensure_actor: serialised("ensure_actor", prepareEnsureActor, ensureActor),
   delete_actors: serialised("delete_actors", prepareActorDeletion, deleteActors),
   list_documents: listDocuments,
-  get_document: getDocument
+  get_document: getDocument,
+  create_documents: serialised("create_documents", prepareCreation, createDocuments),
+  update_documents: serialised("update_documents", prepareChanges, updateDocuments),
+  delete_documents: serialised("delete_documents", prepareDeletion, deleteDocuments)
 });

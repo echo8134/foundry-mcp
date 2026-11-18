@@ -54,7 +54,8 @@ describe("main.ts", () => {
     });
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    await waitFor(() => out().split("\n").filter(Boolean).length >= 2, "the initialize and tools/list answers");
+    // Whole lines only: the tools/list answer is about as large as a pipe buffer and can arrive in two parts.
+    await waitFor(() => out().split("\n").length > 2, "the initialize and tools/list answers");
 
     const messages = out()
       .split("\n")
@@ -63,8 +64,10 @@ describe("main.ts", () => {
     for (const message of messages) assert.equal(message.jsonrpc, "2.0");
     const tools = messages.find((m) => m.id === 2)?.result?.tools as { name: string }[];
     assert.deepEqual(tools.map((t) => t.name).sort(), [
+      "create_documents",
       "create_walls",
       "delete_actors",
+      "delete_documents",
       "delete_tokens",
       "delete_walls",
       "ensure_actor",
@@ -80,6 +83,7 @@ describe("main.ts", () => {
       "place_tokens",
       "sync_lights",
       "sync_walls",
+      "update_documents",
       "update_tokens"
     ]);
     assert.match(err(), /foundry-mcp \| /);

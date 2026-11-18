@@ -32,8 +32,10 @@ describe("MCP tools", () => {
     const { client } = await connect(() => ({}));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
+      "create_documents",
       "create_walls",
       "delete_actors",
+      "delete_documents",
       "delete_tokens",
       "delete_walls",
       "ensure_actor",
@@ -49,6 +51,7 @@ describe("MCP tools", () => {
       "place_tokens",
       "sync_lights",
       "sync_walls",
+      "update_documents",
       "update_tokens"
     ]);
     const createWalls = tools.find((t) => t.name === "create_walls")!;
@@ -1194,5 +1197,198 @@ describe("MCP tools for reading any document", () => {
     }
     assert.match(TOOLS.get_schema.description, /The stored field names of any document type/);
     assert.match(TOOLS.get_schema.description, /A document without types, such as Token, JournalEntry or User/);
+  });
+});
+
+describe("MCP tools for writing any document", () => {
+  const journal = {
+    type: "JournalEntry",
+    documents: [{ name: " Lore ", pages: [{ name: "Gods", anything: ["the", "module", "checks"] }] }]
+  };
+  const changes = {
+    documents: [{ uuid: " JournalEntry.abc ", data: { name: " Lore " }, remove: [" flags.world.note "] }]
+  };
+  const deletion = { uuids: [" JournalEntry.abc ", "Macro.def"], handMade: true };
+
+  it("sends the three write tools to the bridge with the document data untouched, and UUIDs and paths trimmed", async () => {
+    const { client, calls } = await connect(() => ({}));
+    for (const [name, args] of [
+      ["create_documents", journal],
+      ["create_documents", { type: "JournalEntryPage", parent: " JournalEntry.abc ", documents: [{ name: "Gods" }] }],
+      ["create_documents", { type: "Item", pack: "world.loot", documents: [{ name: "Rope", type: "loot" }] }],
+      ["update_documents", changes],
+      ["delete_documents", deletion]
+    ] as const) {
+      assert.notEqual((await client.callTool({ name, arguments: args })).isError, true, name);
+    }
+    assert.deepEqual(
+      calls.map((call) => [call.method, call.params, call.timeoutMs]),
+      [
+        ["create_documents", journal, 90_000],
+        [
+          "create_documents",
+          { type: "JournalEntryPage", parent: "JournalEntry.abc", documents: [{ name: "Gods" }] },
+          90_000
+        ],
+        ["create_documents", { type: "Item", pack: "world.loot", documents: [{ name: "Rope", type: "loot" }] }, 90_000],
+        [
+          "update_documents",
+          { documents: [{ uuid: "JournalEntry.abc", data: { name: " Lore " }, remove: ["flags.world.note"] }] },
+          90_000
+        ],
+        ["delete_documents", { uuids: ["JournalEntry.abc", "Macro.def"], handMade: true }, 30_000]
+      ]
+    );
+  });
+
+  for (const [label, name, args, message] of [
+    [
+      "create_documents without documents",
+      "create_documents",
+      { type: "Macro", documents: [] },
+      />=1 items at documents$/
+    ],
+    ["create_documents without a type", "create_documents", { documents: [{ name: "A" }] }, /at type$/],
+    [
+      "create_documents with a type Foundry does not have",
+      "create_documents",
+      { type: "Spell", documents: [{}] },
+      /at type$/
+    ],
+    [
+      "create_documents with a document that is no object",
+      "create_documents",
+      { type: "Macro", documents: ["Roll"] },
+      /expected record.* at documents\[0\]$/
+    ],
+    [
+      "create_documents with an input it does not have",
+      "create_documents",
+      { type: "Macro", documents: [{ name: "A" }], folder: ["Macros"] },
+      /Unrecognized key: "folder"/
+    ],
+    ["update_documents without documents", "update_documents", { documents: [] }, />=1 items at documents$/],
+    [
+      "update_documents with an entry without a uuid",
+      "update_documents",
+      { documents: [{ data: {} }] },
+      /at documents\[0\]\.uuid$/
+    ],
+    [
+      "update_documents with an entry that has a key it does not take",
+      "update_documents",
+      { documents: [{ uuid: "Macro.a", name: "Roll" }] },
+      /Unrecognized key: "name"/
+    ],
+    [
+      "update_documents with data that is no object",
+      "update_documents",
+      { documents: [{ uuid: "Macro.a", data: "Roll" }] },
+      /expected record.* at documents\[0\]\.data$/
+    ],
+    ["delete_documents without uuids", "delete_documents", { uuids: [] }, />=1 items at uuids$/],
+    ["delete_documents with a blank uuid", "delete_documents", { uuids: ["Macro.a", " "] }, /at uuids\[1\]$/],
+    [
+      "delete_documents with handMade false",
+      "delete_documents",
+      { uuids: ["Macro.a"], handMade: false },
+      /expected true at handMade$/
+    ],
+    [
+      "delete_documents with an input it does not have",
+      "delete_documents",
+      { uuids: ["Macro.a"], all: true },
+      /Unrecognized key: "all"/
+    ]
+  ] as const) {
+    it(`refuses ${label} before any request is sent`, async () => {
+      const { client, calls } = await connect(() => ({}));
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+      assert.match(text(result), message);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  for (const [tool, args, advice] of [
+    [
+      "create_documents",
+      journal,
+      /Check with list_documents before retrying: running it again creates the documents again/
+    ],
+    [
+      "update_documents",
+      changes,
+      /Running the same call again is safe: it writes only what still differs\. A password is the exception/
+    ],
+    ["delete_documents", deletion, /Running the same call again is safe: it ignores what is already gone/]
+  ] as const) {
+    it(`a timeout on ${tool} warns that it may have been applied, and says how to go on`, async () => {
+      const { client } = await connect(() => {
+        throw new BridgeError("timeout", "Foundry did not answer.");
+      });
+      const result = await client.callTool({ name: tool, arguments: args });
+      assert.match(text(result), /may still have been applied in Foundry/);
+      assert.match(text(result), advice);
+    });
+  }
+
+  it("names the writes that reach past a document in the tools that make them", () => {
+    for (const tool of ["create_documents", "update_documents"] as const) {
+      const { description } = TOOLS[tool];
+      assert.match(
+        description,
+        /A User is an account: the join page of a Foundry server can be reached by anyone who has its address/,
+        tool
+      );
+      assert.match(description, /role 4 makes a Gamemaster/, tool);
+      assert.match(description, /ownership decides which players see and change a document/, tool);
+      assert.match(description, /a ChatMessage is shown to every connected player the moment it is created/, tool);
+      assert.match(description, /A Setting .*not written by this tool/, tool);
+    }
+    assert.match(TOOLS.create_documents.description, /A new User needs a password that is not blank/);
+    assert.match(
+      TOOLS.update_documents.description,
+      /one that is given is written on every call, and Foundry logs that user out/
+    );
+    assert.match(
+      TOOLS.update_documents.description,
+      /It cannot be made blank or removed, passwordSalt cannot be given/
+    );
+  });
+
+  it("tells a caller what the write tools promise: checks before writing, managed flags, repeats and what a deletion takes along", () => {
+    const { create_documents: create, update_documents: update, delete_documents: remove } = TOOLS;
+    assert.match(
+      create.description,
+      /Everything is checked before anything is written, and the whole call is refused when one entry cannot be built/
+    );
+    assert.match(
+      create.description,
+      /Every document made here, and every embedded document made with it, is flagged as bridge-made/
+    );
+    assert.match(create.description, /has error in place of its uuid, and the entries after it are still created/);
+    assert.match(create.description, /Not safe to repeat/);
+    assert.match(
+      update.description,
+      /data read with get_document and passed back unchanged writes nothing, and the same call again writes nothing/
+    );
+    assert.match(update.description, /The embedded documents of a document are not taken inside its data/);
+    assert.match(remove.description, /Foundry cannot bring a deleted document back, and there is no undo/);
+    assert.match(remove.description, /Foundry deletes a document together with everything embedded in it/);
+    assert.match(
+      remove.description,
+      /Deleting a Folder deletes the folder alone: the documents in it move to its parent folder, and so does every folder below it, at any depth/
+    );
+    assert.match(
+      remove.description,
+      /is deleted only with handMade: true: without it the whole call is refused, names those documents and deletes nothing/
+    );
+    for (const tool of [create, update, remove]) {
+      assert.match(
+        tool.description,
+        /the tools made for them do more and are the better choice: ensure_actor and delete_actors, place_tokens/
+      );
+    }
   });
 });
