@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Collection, type EmbeddedWrite, fakeActors } from "./fake-actors.ts";
-import { DOCUMENT_PLACES, type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
+import { absoluteUuid, DOCUMENT_PLACES, type DocumentWrite, fakeDocuments } from "./fake-documents.ts";
 import { fakeDocument } from "./fake-dom.ts";
 import { applyChanges, cleanValue, cloneChanges, ForcedDeletion, merge, validationErrors } from "./fake-model.ts";
 import { sceneSchema, systemConfig } from "./fake-system.ts";
@@ -84,6 +84,8 @@ export function fakeWorld(options: WorldOptions = {}) {
     levelUpdates: 0,
     folderCreates: 0,
     thumbnails: 0,
+    /** The level each thumbnail was rendered of. */
+    thumbnailLevels: [] as string[],
     notifications: [] as string[],
     wallCreates: 0,
     wallDeletes: 0,
@@ -415,6 +417,48 @@ export function fakeWorld(options: WorldOptions = {}) {
     return cross === 0 && within;
   }
 
+  /**
+   * A level, as far as the tools read one: its stored fields with Foundry's initial values for them
+   * (common/documents/level.mjs:74-116), and the base elevation its bottom gives it (client/documents/level.mjs:62-66).
+   */
+  function makeLevel(id: string, data: Record<string, any> = {}) {
+    const source = merge(
+      {
+        name: id,
+        sort: 0,
+        elevation: { bottom: 0, top: 20 },
+        background: { src: null, color: "#999999" },
+        foreground: { src: null },
+        textures: {
+          anchorX: 0.5,
+          anchorY: 0.5,
+          offsetX: 0,
+          offsetY: 0,
+          fit: "fill",
+          scaleX: 1,
+          scaleY: 1,
+          rotation: 0
+        },
+        visibility: { levels: [] }
+      },
+      data
+    );
+    return {
+      id,
+      _source: source,
+      elevation: { base: source.elevation.bottom ?? Math.min(source.elevation.top, 0) },
+      get name() {
+        return source.name;
+      },
+      get background() {
+        return source.background;
+      },
+      get foreground() {
+        return source.foreground;
+      }
+    };
+  }
+
   function makeScene(data: Record<string, any>) {
     const source = merge(
       {
@@ -439,22 +483,12 @@ export function fakeWorld(options: WorldOptions = {}) {
       },
       stored(data)
     );
-    const level = {
-      id: "lvl1",
-      name: "Level",
-      // LevelDocument#prepareBaseData (client/documents/level.mjs:62-66).
-      elevation: { base: 0 },
-      _source: { background: { src: null } },
-      get background() {
-        return { ...this._source.background, color: "#999999" };
-      }
-    };
+    const level = makeLevel("lvl1", { name: "Level" });
     const walls = new Collection<any>();
     const lights = new Collection<any>();
     const tokens = new Collection<any>();
     const levels = new Collection<any>([["lvl1", level]]);
-    for (const id of options.extraLevels ?? [])
-      levels.set(id, { id, name: id, elevation: { base: 0 }, _source: { background: { src: null } } });
+    for (const id of options.extraLevels ?? []) levels.set(id, makeLevel(id));
     /**
      * As walls and lights: a token that fails validation or that a preCreate hook vetoes is skipped
      * (client/data/client-backend.mjs:81-112). A token created without a sort goes one above the highest on the scene
@@ -616,7 +650,7 @@ export function fakeWorld(options: WorldOptions = {}) {
           return updates.map(({ _id }) => tokens.get(_id));
         }
         log.levelUpdates++;
-        for (const { _id, ...changes } of updates) merge(level._source, changes);
+        for (const { _id, ...changes } of updates) merge(levels.get(_id)._source, changes);
       },
       /**
        * Scene#moveTokens (client/documents/scene.mjs:676) with a destination: the movement fields and the other data in
@@ -715,11 +749,15 @@ export function fakeWorld(options: WorldOptions = {}) {
         else log.wallDeletes++;
         return ids.map((id) => collection.get(id)!).filter((document) => collection.delete(document.id));
       },
-      async createThumbnail() {
+      /** Scene#createThumbnail draws the level it is given, and the initial level without one (client/documents/scene.mjs:1706-1714). */
+      async createThumbnail(thumbnailOptions: { level?: string } = {}) {
         await control.thumbnailGate;
         if (control.thumbnailFails) throw new Error("no upload permission");
         log.thumbnails++;
-        return { thumb: `thumb-of:${level._source.background.src}:${source.width}x${source.height}` };
+        const drawn = thumbnailOptions.level === undefined ? level : levels.get(thumbnailOptions.level);
+        if (!drawn) throw new Error("The Level doesn't belong to this Scene");
+        log.thumbnailLevels.push(drawn.id);
+        return { thumb: `thumb-of:${drawn._source.background.src}:${source.width}x${source.height}` };
       }
     };
     scenes.set(scene.id, scene);
@@ -780,22 +818,28 @@ export function fakeWorld(options: WorldOptions = {}) {
 
   /**
    * The parts of parseUuid (common/utils/helpers.mjs:1305-1371) the tools read, for a primary document and its
-   * embedded ones: a compendium UUID without the document type takes the pack's type, as a legacy UUID does there.
+   * embedded ones: a compendium UUID without the document type takes the pack's type, as a legacy UUID does there,
+   * and a relative UUID is resolved against the document it is given with, or leads nowhere without one.
    */
-  function parseUuid(uuid: unknown) {
+  function parseUuid(uuid: unknown, { relative }: { relative?: any } = {}): any {
     if (typeof uuid !== "string") return null;
+    if (uuid.startsWith(".")) {
+      const absolute = relative ? absoluteUuid(uuid, relative) : null;
+      return absolute === null ? null : parseUuid(absolute);
+    }
     const parts = uuid.split(".");
     let collection: unknown;
+    let pack: string[] = [];
     if (parts[0] === "Compendium") {
-      const pack = documents.packs.get(`${parts[1]}.${parts[2]}`);
-      if (pack && parts[3] !== pack.documentName) parts.splice(3, 0, pack.documentName);
-      collection = pack;
-      parts.splice(0, 3);
+      const named = documents.packs.get(`${parts[1]}.${parts[2]}`);
+      if (named && parts[3] !== named.documentName) parts.splice(3, 0, named.documentName);
+      collection = named;
+      pack = parts.splice(0, 3);
     } else {
       collection = globals.game.collections.get(parts[0]);
     }
     const [, documentId, ...embedded] = parts;
-    return embedded.length % 2 ? null : { collection, documentId, embedded };
+    return embedded.length % 2 ? null : { uuid: [...pack, ...parts].join("."), collection, documentId, embedded };
   }
 
   /** Built with a parent scene, as Foundry's own token class is: an unsaved token, or the error its model throws. */
@@ -904,6 +948,11 @@ export function fakeWorld(options: WorldOptions = {}) {
     scene.tokens.set(token.id, token);
     return token;
   };
+  const addLevel = (scene: any, id: string, data: Record<string, any> = {}) => {
+    const level = makeLevel(id, data);
+    scene.levels.set(id, level);
+    return level;
+  };
   const addLight = (scene: any, data: Record<string, any> = {}) => {
     const light = makeLight({ x: 100, y: 100, config: { dim: 10 }, ...data }, scene);
     scene.lights.set(light.id, light);
@@ -914,6 +963,7 @@ export function fakeWorld(options: WorldOptions = {}) {
     addFolder,
     addScene,
     addWall,
+    addLevel,
     addLight,
     addActor,
     addPackActor,

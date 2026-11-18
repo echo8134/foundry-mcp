@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 const SCRIPTS = new URL("../module/scripts/", import.meta.url);
 
 /** The modules that are about one kind of document, by the prefix of their file name. */
-const OF_ONE_KIND = /^(actor|item|light|scene|token|wall)-/;
+const OF_ONE_KIND = /^(actor|item|light|region|scene|token|wall)-/;
 
 const importsOf = (file: string) =>
   [...readFileSync(new URL(file, SCRIPTS), "utf8").matchAll(/from "\.\/([a-z-]+\.mjs)"/g)].map((match) => match[1]!);

@@ -271,7 +271,7 @@ const SPECS: Record<Method, ToolSpec> = {
   get_scene: defineTool({
     description:
       'Read a Foundry scene: id, name, navName ("" when none), folder (path of folder names from the root), active, viewed, shiftX and shiftY (the map shift, see ensure_scene), grid, ' +
-      "background image path, levels, every wall, every ambient light and every token. The returned `frame` " +
+      "background image path, levels, every wall, every ambient light, every token and every region. The returned `frame` " +
       "is the scene size in pixels. Wall coordinates `c` ([x1, y1, x2, y2]) are in that frame (scene pixels). To " +
       "compare them with an image from get_scene_image, multiply by imageFrame / sceneFrame, because the image " +
       "is usually smaller than the scene. Wall `kind` is one of wall, door, secret-door, window, terrain, " +
@@ -289,7 +289,23 @@ const SPECS: Record<Method, ToolSpec> = {
       "takes: id and at in place of _id, x and y. An entry passed back unchanged writes nothing. The stored sight " +
       "is not always what a token sees: " +
       SENSES_SET_VISION +
-      ".",
+      ". Levels are `{id, name, sort, initial, elevation {bottom, top}, background {src, color}, foreground {src}, " +
+      "textures, visibility {levels}}`, as Foundry stores them: initial is true for the level the scene opens on, an " +
+      "elevation bound of null is no bound, textures says how the level's images lie over the scene rectangle " +
+      "(anchorX, anchorY, offsetX and offsetY in scene pixels, fit, scaleX, scaleY, rotation), and visibility.levels " +
+      "are the levels shown together with this one. Levels are created and changed with create_documents and " +
+      "update_documents (type Level, parent the scene), and the scene's initialLevel with update_documents. Regions " +
+      "are `{id, name, levels, elevation {bottom, top, topInclusive}, shapes, color, visibility, hidden, behaviors, " +
+      "managed}`, with restriction while one is enabled and attachment {token} for a region that follows a token. " +
+      "visibility is 4 on the region layer while it is unlocked, 0 on the region layer, 1 always for the Gamemaster, " +
+      "3 always for observers, 2 always for everyone. Each shape is `{type, hole, ...}` in the same frame as the " +
+      "walls: rectangle {x, y, width, height, anchorX, anchorY, rotation}, circle {x, y, radius}, ellipse {x, y, " +
+      "radiusX, radiusY, rotation}, polygon {points as [x, y] pairs, origin}, and Foundry's other types (cone, ring, " +
+      "line, emanation, token, grid) with the fields it stores for them. hole: true cuts the shape out of the " +
+      "region. Behaviors are `{id, type, name, disabled, system, managed}`. system is the stored data of the " +
+      "behavior type, the source of an executeScript included, but for a UUID that Foundry stores relative to the " +
+      "behavior, such as a destination of a teleportToken: that is given as the absolute UUID it names. A region's " +
+      "own UUID is Scene.<scene id>.Region.<region id>.",
     input: z.object({
       sceneId,
       tokens: tokenIds.optional().describe("Ids of tokens to return in full in tokenData.")

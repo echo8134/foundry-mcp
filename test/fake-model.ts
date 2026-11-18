@@ -18,7 +18,8 @@ import {
   SchemaField,
   StringField,
   TypeDataField5e,
-  TypedObjectField
+  TypedObjectField,
+  TypedSchemaField
 } from "./fake-system.ts";
 
 export const isObject = (value: unknown): value is Record<string, any> =>
@@ -172,6 +173,12 @@ export function cleanValue(field: DataField, value: unknown, { partial, source, 
     }
     return data;
   }
+  // Cleaned by the schema of the type it names, and left as it is where it names none (common/data/fields.mjs:4655-4670).
+  if (field instanceof TypedSchemaField) {
+    const data: Record<string, any> = isObject(value) ? value : {};
+    const schema = Object.hasOwn(field.types, data.type) ? field.types[data.type] : undefined;
+    return schema ? cleanValue(schema, data, { partial: false }) : data;
+  }
   if (field instanceof ArrayField) {
     const list = Array.isArray(value) ? value : [value];
     return list.map((element) => cleanValue(field.element, element, { partial: false }));
@@ -212,6 +219,10 @@ export function validationErrors(field: DataField, value: unknown, path = ""): s
   if (field instanceof ArrayField) {
     if (!Array.isArray(value)) return fail("must be an Array");
     return value.flatMap((element, index) => validationErrors(field.element, element, `${path}.${index}`));
+  }
+  if (field instanceof TypedSchemaField) {
+    const schema = isObject(value) && Object.hasOwn(field.types, value.type) ? field.types[value.type] : undefined;
+    return schema ? validationErrors(schema, value, path) : fail("does not have a valid type");
   }
   if (field instanceof DocumentOwnershipField) return ownershipErrors(value, path);
   if (field instanceof TypeDataField5e && isObject(value)) {

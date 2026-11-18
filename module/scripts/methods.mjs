@@ -13,6 +13,8 @@ import { MethodError } from "./errors.mjs";
 import { folderPath, folderScope } from "./folders.mjs";
 import { canvasToFrame, frameToCanvas, pathsToSegments } from "./geometry.mjs";
 import { lightData, lightFields } from "./light-data.mjs";
+import { levelFields } from "./region-data.mjs";
+import { regionFields } from "./region-methods.mjs";
 import {
   canvasOverflow,
   planSceneChanges,
@@ -89,7 +91,7 @@ async function getScene({ sceneId, tokens: tokenIds = [] }) {
     shiftY: scene.shiftY ?? 0,
     grid: { type: gridType(grid), size: grid.size, distance: grid.distance, units: grid.units },
     background: { src: scene.initialLevel?.background?.src ?? null },
-    levels: scene.levels.map((level) => ({ id: level.id, name: level.name })),
+    levels: scene.levels.map((level) => levelFields(level, scene.initialLevel?.id)),
     walls: scene.walls.map((wall) => {
       const [x1, y1] = canvasToFrame([wall.c[0], wall.c[1]], frame, rect);
       const [x2, y2] = canvasToFrame([wall.c[2], wall.c[3]], frame, rect);
@@ -112,7 +114,8 @@ async function getScene({ sceneId, tokens: tokenIds = [] }) {
       managed: isManaged(light)
     })),
     tokens: scene.tokens.map((token) => tokenFields(token, frame, rect)),
-    tokenData: tokenIds.map((id) => storedTokenData(scene.tokens.get(id), frame, rect))
+    tokenData: tokenIds.map((id) => storedTokenData(scene.tokens.get(id), frame, rect)),
+    regions: scene.regions.map((region) => regionFields(region, frame, rect))
   };
 }
 

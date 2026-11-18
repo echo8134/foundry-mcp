@@ -5,6 +5,7 @@
 import { Collection } from "./fake-actors.ts";
 import { applyChanges, cleanValue, cloneChanges, isObject, sanitizeHtml, validationErrors } from "./fake-model.ts";
 import {
+  AngleField,
   ArrayField,
   BooleanField,
   ColorField,
@@ -26,7 +27,8 @@ import {
   SchemaField,
   SetField,
   StringField,
-  TypeDataField
+  TypeDataField,
+  TypedSchemaField
 } from "./fake-system.ts";
 
 type Source = Record<string, any>;
@@ -125,6 +127,97 @@ const ownership = () => new DocumentOwnershipField({ initial: () => ({ default: 
 const named = () => new StringField({ required: true, blank: false });
 const id = () => new DocumentIdField({ nullable: true, initial: null });
 const events = () => new SetField(new StringField());
+
+const coordinate = () => new NumberField({ required: true });
+const length = () => new NumberField({ required: true, min: 0 });
+const turned = () => new AngleField({ initial: 0 });
+const onGrid = () => new BooleanField({ initial: false });
+const origin = () => new SchemaField({ x: coordinate(), y: coordinate() }, { nullable: true, initial: null });
+
+/**
+ * The shapes of a region, each type with the fields and initial values of Foundry's data model for it
+ * (common/data/data.mjs:127-560). An emanation surrounds a shape of any type but its own and a ring (:330-331).
+ */
+function shapeTypes(inEmanation = false): Record<string, SchemaField> {
+  const shape = (type: string, own: Record<string, DataField>) =>
+    new SchemaField({
+      type: new StringField({ required: true, blank: false, initial: type }),
+      hole: new BooleanField({ initial: false }),
+      ...own
+    });
+  const types: Record<string, SchemaField> = {
+    rectangle: shape("rectangle", {
+      x: coordinate(),
+      y: coordinate(),
+      width: length(),
+      height: length(),
+      anchorX: new NumberField({ initial: 0 }),
+      anchorY: new NumberField({ initial: 0 }),
+      rotation: turned(),
+      gridBased: onGrid()
+    }),
+    circle: shape("circle", { x: coordinate(), y: coordinate(), radius: length(), gridBased: onGrid() }),
+    ellipse: shape("ellipse", {
+      x: coordinate(),
+      y: coordinate(),
+      radiusX: length(),
+      radiusY: length(),
+      rotation: turned(),
+      gridBased: onGrid()
+    }),
+    cone: shape("cone", {
+      x: coordinate(),
+      y: coordinate(),
+      radius: length(),
+      angle: new NumberField({ required: true, min: 0, max: 360 }),
+      rotation: turned(),
+      curvature: new StringField({ initial: "round" }),
+      gridBased: onGrid()
+    }),
+    line: shape("line", {
+      x: coordinate(),
+      y: coordinate(),
+      length: length(),
+      width: length(),
+      rotation: turned(),
+      gridBased: onGrid()
+    }),
+    polygon: shape("polygon", { points: new ArrayField(coordinate()), origin: origin() }),
+    token: shape("token", {
+      x: new NumberField({ required: true, integer: true }),
+      y: new NumberField({ required: true, integer: true }),
+      width: new NumberField({ required: true, positive: true }),
+      height: new NumberField({ required: true, positive: true }),
+      shape: new NumberField({ required: true, choices: [0, 1, 2, 3, 4, 5] })
+    }),
+    grid: shape("grid", {
+      offsets: new ArrayField(
+        new SchemaField({
+          i: new NumberField({ required: true, integer: true }),
+          j: new NumberField({ required: true, integer: true })
+        })
+      ),
+      origin: origin()
+    })
+  };
+  if (inEmanation) return types;
+  return {
+    ...types,
+    ring: shape("ring", {
+      x: coordinate(),
+      y: coordinate(),
+      radius: length(),
+      innerWidth: length(),
+      outerWidth: length(),
+      gridBased: onGrid()
+    }),
+    emanation: shape("emanation", {
+      base: new TypedSchemaField(shapeTypes(true)),
+      radius: length(),
+      gridBased: onGrid()
+    })
+  };
+}
 
 /**
  * The documents an adventure holds as data: a set of a field that is the schema of their class, which it names as
@@ -297,10 +390,39 @@ const DEFINITIONS: Definition[] = [
     name: "ActorDelta",
     fields: { _id: id(), name: new StringField({ nullable: true, initial: null }), flags: new DocumentFlagsField() }
   },
-  // Lies in a scene, and holds the behaviors that answer what happens in it.
+  // Lies in a scene, and holds the behaviors that answer what happens in it. Foundry gives a new region a colour by
+  // chance (common/documents/region.mjs:52-53), and the fake always the same one.
   {
     name: "Region",
-    fields: { _id: id(), name: named(), hidden: new BooleanField({ initial: false }), flags: new DocumentFlagsField() },
+    fields: {
+      _id: id(),
+      name: named(),
+      color: new ColorField({ initial: () => "#3399cc" }),
+      shapes: new ArrayField(new TypedSchemaField(shapeTypes())),
+      elevation: new SchemaField({
+        bottom: new NumberField({ nullable: true, initial: null }),
+        top: new NumberField({ nullable: true, initial: null }),
+        topInclusive: new BooleanField({ initial: false })
+      }),
+      levels: new SetField(new DocumentIdField()),
+      restriction: new SchemaField({
+        enabled: new BooleanField({ initial: false }),
+        type: new StringField({ initial: "move" }),
+        priority: new NumberField({ integer: true, min: 0, initial: 0 })
+      }),
+      attachment: new SchemaField({
+        token: new ForeignDocumentField({ documentName: "Token" }, { nullable: true, initial: null })
+      }),
+      // CONST.REGION_VISIBILITY (common/constants.mjs:2202-2228).
+      visibility: new NumberField({ choices: [0, 1, 2, 3, 4], initial: 4 }),
+      highlightMode: new StringField({ initial: "shapes" }),
+      displayMeasurements: new BooleanField({ initial: false }),
+      hidden: new BooleanField({ initial: false }),
+      locked: new BooleanField({ initial: false }),
+      ownership: ownership(),
+      flags: new DocumentFlagsField(),
+      _shapeConstraints: new ArrayField(new ArrayField(new NumberField()), { nullable: true, initial: null })
+    },
     embedded: { RegionBehavior: "behaviors" }
   },
   {
@@ -313,10 +435,29 @@ const DEFINITIONS: Definition[] = [
       disabled: new BooleanField({ initial: false }),
       flags: new DocumentFlagsField()
     },
-    // Three of Foundry's own types (common/documents/region-behavior.mjs:30), with the fields of their data models
-    // (client/data/region-behaviors/execute-script.mjs:22-27, execute-macro.mjs:21-27, pause-game.mjs:22-26).
-    types: ["executeMacro", "executeScript", "pauseGame"],
+    // Five of Foundry's own types (common/documents/region-behavior.mjs:30), with the fields of their data models
+    // (client/data/region-behaviors/execute-script.mjs:22-27, execute-macro.mjs:21-27, pause-game.mjs:22-26,
+    // change-level.mjs:25-34, teleport-token.mjs:35-66).
+    types: ["changeLevel", "executeMacro", "executeScript", "pauseGame", "teleportToken"],
     models: {
+      changeLevel: { schema: new SchemaField({ movementActions: new SetField(new StringField()) }) },
+      teleportToken: {
+        schema: new SchemaField({
+          destinations: new SetField(new DocumentUUIDField({ type: "Region", relative: true, relativize: true })),
+          placement: new StringField({ initial: "random" }),
+          snap: new BooleanField({ initial: true }),
+          choice: new BooleanField({ initial: false }),
+          revealed: new BooleanField({ initial: false }),
+          dialog: new SchemaField({
+            revealed: new StringField({ nullable: true, initial: null }),
+            unrevealed: new StringField({ nullable: true, initial: null })
+          }),
+          transition: new SchemaField({
+            type: new StringField({ nullable: true, initial: null }),
+            duration: new NumberField({ integer: true, min: 500, max: 10000, step: 100, initial: 1500 })
+          })
+        })
+      },
       executeScript: { schema: new SchemaField({ events: events(), source: new JavaScriptField({ initial: "" }) }) },
       executeMacro: {
         schema: new SchemaField({
@@ -360,6 +501,24 @@ function mergeInto(target: Source, picked: Source) {
     else target[key] = value;
   }
   return target;
+}
+
+/**
+ * The UUID a relative one names (common/utils/helpers.mjs:1386-1451), for world documents: each dot after the first
+ * goes up one document, and what follows names a document below that one, or beside it when it begins with an id.
+ */
+export function absoluteUuid(uuid: string, relative: any): string | null {
+  let ups = 1;
+  while (uuid[ups] === ".") ups++;
+  const rest = uuid.slice(ups);
+  let document = relative;
+  while (--ups && document) document = document.parent;
+  if (!document) return null;
+  if (!rest) return document.uuid;
+  if (rest.split(".").length % 2 === 0) return `${document.uuid}.${rest}`;
+  return document.parent
+    ? `${document.parent.uuid}.${document.documentName}.${rest}`
+    : `${document.documentName}.${rest}`;
 }
 
 export function fakeDocuments(env: Env) {
