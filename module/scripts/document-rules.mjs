@@ -51,8 +51,15 @@ const RUNS_CODE = Object.freeze({
   executeMacro: { field: "uuid", runs: `it makes Foundry run a macro ${UNATTENDED}, ${MACRO_REACH}` }
 });
 
-/** Foundry trims the type it stores (common/data/fields.mjs:1764), so a padded one names the same type. */
-const codeOf = (type) => (typeof type === "string" && Object.hasOwn(RUNS_CODE, type.trim()) ? type.trim() : null);
+/**
+ * The type of a behavior as Foundry would store it, where it is one that runs code. Foundry makes a text of whatever
+ * it is given for the type and trims it (common/data/fields.mjs:1764-1767, :1781-1783), so a padded type and a list
+ * of one type name that type.
+ */
+function codeOf(type) {
+  const stored = String(type ?? "").trim();
+  return Object.hasOwn(RUNS_CODE, stored) ? stored : null;
+}
 
 /** The region behaviors of the world's scenes that run the macro (client/data/region-behaviors/execute-macro.mjs:34). */
 const behaviorsRunning = (macro) =>

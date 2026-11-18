@@ -279,9 +279,22 @@ describe("fieldProblems with the embedded documents given inside the data", () =
     assert.deepEqual(problems({ delta: null }), []);
   });
 
-  it("reports a collection whose class it cannot read as unchecked, and leaves a list that is none to the model", () => {
+  it("reports a collection whose class it cannot read as unchecked", () => {
     assert.deepEqual(problems({ loose: [{ anything: 1 }] }), [["loose.0", "unchecked"]]);
-    assert.deepEqual(problems({ pages: { name: "One" } }), []);
+  });
+
+  it("takes only a list of objects for an embedded collection, of which Foundry would make a list unseen", () => {
+    assert.deepEqual(problems({ pages: { name: "One" } }), [["pages", "list"]]);
+    assert.deepEqual(problems({ pages: { 0: { nmae: "One" } } }), [["pages", "list"]]);
+    assert.deepEqual(problems({ pages: [{ name: "One" }, [{ name: "Two" }], "Three", null] }), [
+      ["pages.1", "list"],
+      ["pages.2", "list"],
+      ["pages.3", "list"]
+    ]);
+    assert.equal(
+      explainFieldProblems(fieldProblems(entry, { pages: { 0: {} } }, { embedded })),
+      "Not a list of documents: pages. Give embedded documents as a list, each as an object of its own data."
+    );
   });
 
   it("finds a reserved key inside an embedded document as anywhere else", () => {
@@ -342,6 +355,10 @@ describe("fieldProblems of documents held as data", () => {
     for (const options of [{}, { embedded: true }]) {
       assert.deepEqual(problems(data, options), [["actors.0.effects.0.glow", "unknown"]]);
     }
+  });
+
+  it("takes only a list for the documents a field holds as data", () => {
+    assert.deepEqual(problems({ actors: { 0: { type: "npc", nmae: "Ogre" } } }), [["actors", "list"]]);
   });
 
   it("reads a model that is no document as a plain schema", () => {

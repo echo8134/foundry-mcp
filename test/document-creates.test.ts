@@ -188,6 +188,12 @@ describe("create_documents", () => {
       /pages\.0\.flags\.foundry-mcp cannot be given/
     ],
     [
+      "embedded documents in an object with numbered keys, of which Foundry would make a list",
+      "JournalEntry",
+      { name: "A", pages: { 0: { name: "P", colour: "red" } } },
+      /Not a list of documents: pages\. Give embedded documents as a list/
+    ],
+    [
       "data Foundry's model refuses",
       "JournalEntry",
       { folder: null },

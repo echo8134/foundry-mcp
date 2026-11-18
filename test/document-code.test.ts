@@ -130,6 +130,47 @@ describe("code that Foundry runs by itself", () => {
     assert.deepEqual(world.log.documentWrites[0]!.data, [{ name: "Found Mine" }]);
   });
 
+  it("takes no behavior that hides in an object where Foundry would read a list of them", async () => {
+    await assert.rejects(
+      create({ type: "Region", parent: scene.uuid, documents: [{ name: "Trap", behaviors: { 0: SCRIPT } }] }),
+      refused("invalid_params", /^documents\[0\]: Not a list of documents: behaviors\..*Nothing was written\.$/)
+    );
+    await assert.rejects(
+      create({
+        type: "Scene",
+        documents: [{ name: "Vault", regions: { 0: { name: "Trap", behaviors: [SCRIPT] } } }]
+      }),
+      refused("invalid_params", /^documents\[0\]: Not a list of documents: regions\./)
+    );
+    await assert.rejects(
+      create({ type: "Region", parent: scene.uuid, documents: [{ name: "Trap", behaviors: [[SCRIPT]] }] }),
+      refused("invalid_params", /^documents\[0\]: Not a list of documents: behaviors\.0\./)
+    );
+    world.addPack("world.adventures", "Adventure");
+    await assert.rejects(
+      create({
+        type: "Adventure",
+        pack: "world.adventures",
+        documents: [{ name: "Mine", scenes: { 0: { name: "Cave", regions: [{ name: "Pit", behaviors: [SCRIPT] }] } } }]
+      }),
+      refused("invalid_params", /^documents\[0\]: Not a list of documents: scenes\./)
+    );
+    assert.deepEqual([scene.regions.size, writes(world)], [1, []]);
+  });
+
+  it("knows a type that runs code however it is spelled, as Foundry reads it", async () => {
+    for (const type of [["executeScript"], " executeMacro "]) {
+      await assert.rejects(
+        create({ type: "Region", parent: scene.uuid, documents: [{ name: "Trap", behaviors: [{ type }] }] }),
+        refused(
+          "invalid_params",
+          /^documents\[0\]: behaviors\.0: These tools create no region behavior of the type execute/
+        )
+      );
+    }
+    assert.deepEqual([scene.regions.size, writes(world)], [1, []]);
+  });
+
   it("creates a region behavior that runs no code, by itself and with its region", async () => {
     const alone = await create({ type: "RegionBehavior", parent: region.uuid, documents: [PAUSE] });
     assert.equal(alone.created, 1);

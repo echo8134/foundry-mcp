@@ -330,6 +330,21 @@ const DEFINITIONS: Definition[] = [
   }
 ];
 
+/**
+ * What Foundry makes of a value given for a list field before it validates it (common/data/fields.mjs:2471-2484): a
+ * list stays, an object becomes the list of its entries under whole numbers, and any other value a list of that one.
+ */
+function asList(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  if (!isObject(value)) return [value];
+  const list: unknown[] = [];
+  for (const [key, entry] of Object.entries(value)) {
+    const index = Number(key);
+    if (Number.isInteger(index) && index >= 0) list[index] = entry;
+  }
+  return list;
+}
+
 /** The value at a dot path, as a nested object that holds only that path. */
 function pickPath(source: Source, path: string): Source {
   const [key, ...rest] = path.split(".");
@@ -388,7 +403,7 @@ export function fakeDocuments(env: Env) {
   function builtSource(definition: Definition, data: Source): Source {
     const { name, embedded = {}, types } = definition;
     if (!isObject(data)) throw new Error(`${name} validation errors: must be an object`);
-    const given = Object.fromEntries(Object.values(embedded).map((field) => [field, data[field] ?? []]));
+    const given = Object.fromEntries(Object.values(embedded).map((field) => [field, asList(data[field] ?? [])]));
     for (const field of Object.values(embedded)) delete data[field];
     const type = types ? (data.type ?? definition.fields.type?.initial) : undefined;
     if (types && !types.includes(type)) {
@@ -399,8 +414,7 @@ export function fakeDocuments(env: Env) {
     const errors = validationErrors(fields, data);
     if (errors.length > 0) throw new Error(`${name} validation errors: ${errors.join("; ")}`);
     for (const [child, field] of Object.entries(embedded)) {
-      if (!Array.isArray(given[field])) throw new Error(`${name} validation errors: ${field}: must be an Array`);
-      data[field] = given[field].map((element: Source, index: number) => {
+      data[field] = given[field]!.map((element: Source, index: number) => {
         try {
           const source = builtSource(definitions.get(child)!, element);
           source._id ||= newId(child);

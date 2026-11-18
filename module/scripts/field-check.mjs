@@ -14,7 +14,8 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   | {path: string, problem: "variant", types: string[]}
  *   | {path: string, problem: "model", type: string | undefined}
  *   | {path: string, problem: "unchecked"}
- *   | {path: string, problem: "embedded"}} FieldProblem
+ *   | {path: string, problem: "embedded"}
+ *   | {path: string, problem: "list"}} FieldProblem
  */
 /**
  * @typedef {(entry: unknown, field: any, heldType?: string) => object | null | undefined} SchemaFor the schema to check
@@ -148,9 +149,16 @@ const STRUCTURES = Object.freeze({
   // as `schema` (common/data/fields.mjs:3033-3043).
   EmbeddedCollectionField: (field, value, path, walk) => {
     if (!walk.embedded) return void walk.problems.push({ path, problem: "embedded" });
-    if (!Array.isArray(value)) return;
+    // Foundry makes a list of whatever it is given here, of an object with numbered keys the list of their values
+    // (common/data/fields.mjs:2471-2484, :3070-3077). Such documents would be created without this walk having seen
+    // them, so only a list of objects is taken.
+    if (!Array.isArray(value)) return void walk.problems.push({ path, problem: "list" });
     for (const [index, child] of value.entries()) {
       const at = join(path, index);
+      if (!isPlainObject(child)) {
+        walk.problems.push({ path: at, problem: "list" });
+        continue;
+      }
       const inner = embeddedWalk(field.schema, field.element?.documentName, child, at, walk);
       if (inner) check(field.schema, child, at, inner);
     }
@@ -174,7 +182,11 @@ const STRUCTURES = Object.freeze({
     if (inner) checkSchema(field, value, path, inner);
   },
   ArrayField: (field, value, path, walk) => {
-    if (!Array.isArray(value)) return;
+    if (!Array.isArray(value)) {
+      // Documents held as data come as a list, for the reason an embedded collection does.
+      if (typeof field.element?.model?.documentName === "string") walk.problems.push({ path, problem: "list" });
+      return;
+    }
     // An `_id` with a function as its initial value is made up for each element that comes without one, as in dnd5e
     // module/data/abstract/active-effect-data-model.mjs:35. One without is a reference to another document.
     if (typeof field.element?.fields?._id?.initial === "function") walk.idArrays.add(path);
@@ -337,6 +349,11 @@ export function explainFieldProblems(problems) {
   if (paths("embedded").length > 0) {
     sentences.push(
       `Not taken inside the data: ${paths("embedded").join(", ")}. Embedded documents such as items and effects are given through the tool's own inputs for them.`
+    );
+  }
+  if (paths("list").length > 0) {
+    sentences.push(
+      `Not a list of documents: ${paths("list").join(", ")}. Give embedded documents as a list, each as an object of its own data.`
     );
   }
   if (paths("unchecked").length > 0) {
