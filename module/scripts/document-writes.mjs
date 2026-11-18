@@ -1,6 +1,5 @@
-// Writing any document: create, update and delete. Each plans first, which runs every check and reads only, and then
-// writes the plan. A plan is made once before the call waits for its turn, to refuse a bad request at once, and again
-// when its turn comes: a write queued before it may have changed what the plan was made on.
+// Writing any document: create, update and delete. Each has a plan, which runs every check and reads only, and a
+// function that writes the plan and reports from the stored data.
 
 import { diffData, isPlainObject, putAt, updateFor, writeOutcome } from "./data-diff.mjs";
 import {
@@ -108,7 +107,8 @@ async function planCreation({ cls, parent, pack }, given, where) {
   return { data, write: { ...write, unseen: secretsGiven(name, write.wanted) } };
 }
 
-async function planCreations(request) {
+/** Every check of a create, and for each new document the data to create it from. Reads only. */
+export async function planCreations(request) {
   const target = await forWrite(targetOf(request));
   if (target.parent) refuseLocked(packOf(target.parent), `${request.parent} lies`);
   else refuseLocked(target.pack, "The new documents would lie");
@@ -120,13 +120,7 @@ async function planCreations(request) {
   return { target, plans };
 }
 
-export async function prepareCreation(request) {
-  await planCreations(request);
-  return request;
-}
-
-export async function createDocuments(request) {
-  const { target, plans } = await planCreations(request);
+export async function createDocuments({ target, plans }) {
   const { cls, parent, pack } = target;
   const documents = [];
   for (const [index, { data, write }] of plans.entries()) {
@@ -198,7 +192,8 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   return { document, write: { ...write, unseen: secretsGiven(name, write.wanted) } };
 }
 
-async function planChanges({ documents: entries }) {
+/** Every check of an update, and what each entry is to bring about. Reads only. */
+export async function planChanges({ documents: entries }) {
   const plans = [];
   for (const [index, entry] of entries.entries()) plans.push(await planChange(entry, `documents[${index}]: `));
   const places = new Map();
@@ -212,11 +207,6 @@ async function planChanges({ documents: entries }) {
     places.set(document.uuid, index);
   }
   return plans;
-}
-
-export async function prepareChanges(request) {
-  await planChanges(request);
-  return request;
 }
 
 /**
@@ -237,8 +227,7 @@ function describeWritten(plans, before, stored) {
   return changedInStorage(written);
 }
 
-export async function updateDocuments(request) {
-  const plans = await planChanges(request);
+export async function updateDocuments(plans) {
   // toObject, not structuredClone: measured, the stored data of some documents cannot be structured-cloned.
   const before = plans.map(({ document }) => document.toObject());
   const stored = [];
@@ -271,7 +260,7 @@ function hasAncestorIn(document, uuids) {
 }
 
 /** Every check of a deletion, and the documents it deletes. Reads only. */
-async function planDeletion({ uuids, handMade }) {
+export async function planDeletion({ uuids, handMade }) {
   const found = new Map();
   for (const uuid of new Set(uuids)) {
     const document = await findDocument(uuid);
@@ -296,11 +285,6 @@ async function planDeletion({ uuids, handMade }) {
   return documents;
 }
 
-export async function prepareDeletion(request) {
-  await planDeletion(request);
-  return request;
-}
-
 /**
  * Foundry deletes the documents of one class in one parent or pack with one call (common/abstract/document.mjs:696-701).
  * The groups come in the order of the request, but for those a rule puts last: an actor goes after its tokens.
@@ -318,8 +302,7 @@ function deletionGroups(documents) {
   return [...groups.values()].sort((a, b) => Number(isLast(a)) - Number(isLast(b)));
 }
 
-export async function deleteDocuments(request) {
-  const planned = await planDeletion(request);
+export async function deleteDocuments(planned) {
   const deleted = [];
   for (const { cls, parent, pack, documents } of deletionGroups(planned)) {
     // Asked again at its turn, when nothing of the call is still to go: a token whose deletion a hook refused keeps

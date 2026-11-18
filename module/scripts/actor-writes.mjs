@@ -163,14 +163,10 @@ async function planCreation(request, place) {
   return { actor: null, data, write, place, embedded: null };
 }
 
-async function planActor(request) {
+/** Every check of ensure_actor, and what it is to bring about. Reads only. */
+export async function planActor(request) {
   const { actor, place } = await findTarget(request);
   return actor ? planChange(actor, request, place) : planCreation(request, place);
-}
-
-export async function prepareEnsureActor(request) {
-  await planActor(request);
-  return request;
 }
 
 async function createActor(data) {
@@ -239,10 +235,7 @@ function withActorWritten(error, actor, created, changed) {
   return new MethodError(error.code, `${error.message} ${written}`);
 }
 
-export async function ensureActor(request) {
-  // Planned again inside the write queue: a write queued before this one may have created, renamed, moved or deleted
-  // an actor or a folder since prepare looked.
-  const { actor: existing, data, write, place, embedded: planned } = await planActor(request);
+export async function ensureActor({ actor: existing, data, write, place, embedded: planned }, request) {
   const made = place?.missing ?? [];
   const folder = place ? await createMissingFolders("Actor", place) : undefined;
   if (place && request.folder !== undefined) write.wanted.folder = folder;
@@ -288,7 +281,7 @@ export async function ensureActor(request) {
 }
 
 /** Every check of a deletion, and the world actors it deletes. Reads only. */
-function planDeletion({ ids, handMade }) {
+export function planActorDeletion({ ids, handMade }) {
   const actors = [...new Set(ids)].flatMap((id) => game.actors.get(id) ?? []);
   const foreign = actors.filter((actor) => !isManaged(actor));
   if (foreign.length > 0 && handMade !== true) {
@@ -308,13 +301,7 @@ function planDeletion({ ids, handMade }) {
   return actors;
 }
 
-export function prepareActorDeletion(request) {
-  planDeletion(request);
-  return request;
-}
-
-export async function deleteActors(request) {
-  const actors = planDeletion(request);
+export async function deleteActors(actors) {
   if (actors.length === 0) return { deleted: 0, ids: [], names: [] };
   const deleted = await CONFIG.Actor.documentClass.deleteDocuments(actors.map((actor) => actor.id));
   return { deleted: deleted.length, ids: deleted.map((actor) => actor.id), names: deleted.map((actor) => actor.name) };

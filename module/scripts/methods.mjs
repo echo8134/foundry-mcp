@@ -1,12 +1,12 @@
 import { getActor, listActors } from "./actor-methods.mjs";
-import { deleteActors, ensureActor, prepareActorDeletion, prepareEnsureActor } from "./actor-writes.mjs";
+import { deleteActors, ensureActor, planActor, planActorDeletion } from "./actor-writes.mjs";
 import { getDocument, listDocuments } from "./document-methods.mjs";
 import {
   createDocuments,
   deleteDocuments,
-  prepareChanges,
-  prepareCreation,
-  prepareDeletion,
+  planChanges,
+  planCreations,
+  planDeletion,
   updateDocuments
 } from "./document-writes.mjs";
 import { MethodError } from "./errors.mjs";
@@ -499,6 +499,21 @@ const writeQueue = createWriteQueue({ fail: (message) => new MethodError("foundr
 const serialised = (name, prepare, run) => (params) =>
   writeQueue.submit(name, QUEUE_BUDGET_MS[name], () => prepare(params), run);
 
+/**
+ * A write that plans first. The plan runs every check and reads only, so it is made once before the call waits for its
+ * turn, to refuse a bad request at once, and again when its turn comes: a write queued before it may have created,
+ * changed or deleted what the first plan was made on.
+ */
+const planned = (name, plan, write) =>
+  serialised(
+    name,
+    async (params) => {
+      await plan(params);
+      return params;
+    },
+    async (params) => write(await plan(params), params)
+  );
+
 const onScene =
   (check) =>
   ({ sceneId, ...request }) => {
@@ -521,11 +536,11 @@ export const METHODS = Object.freeze({
   place_tokens: serialised("place_tokens", preparePlacement, placeTokens),
   update_tokens: serialised("update_tokens", prepareUpdate, updateTokens),
   delete_tokens: serialised("delete_tokens", onScene(), deleteTokens),
-  ensure_actor: serialised("ensure_actor", prepareEnsureActor, ensureActor),
-  delete_actors: serialised("delete_actors", prepareActorDeletion, deleteActors),
+  ensure_actor: planned("ensure_actor", planActor, ensureActor),
+  delete_actors: planned("delete_actors", planActorDeletion, deleteActors),
   list_documents: listDocuments,
   get_document: getDocument,
-  create_documents: serialised("create_documents", prepareCreation, createDocuments),
-  update_documents: serialised("update_documents", prepareChanges, updateDocuments),
-  delete_documents: serialised("delete_documents", prepareDeletion, deleteDocuments)
+  create_documents: planned("create_documents", planCreations, createDocuments),
+  update_documents: planned("update_documents", planChanges, updateDocuments),
+  delete_documents: planned("delete_documents", planDeletion, deleteDocuments)
 });
