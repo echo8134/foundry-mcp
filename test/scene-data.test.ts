@@ -114,8 +114,10 @@ describe("planSceneChanges on update", () => {
     assert.deepEqual(plan.changed.sort(), ["background.src", "globalLight", "grid.size"]);
   });
 
-  it("treats a hex grid as different from both tool grid types", () => {
+  it("tells the hex grid types apart and from square by Foundry's code", () => {
     const hex = { ...stored, scene: { ...stored.scene, grid: { ...stored.scene.grid, type: 2 } } };
+    assert.deepEqual(planSceneChanges({ grid: { type: "hexOddR" } }, hex).changed, []);
+    assert.deepEqual(planSceneChanges({ grid: { type: "hexEvenR" } }, hex).scene, { grid: { type: 3 } });
     assert.deepEqual(planSceneChanges({ grid: { type: "square" } }, hex).scene, { grid: { type: 1 } });
   });
 

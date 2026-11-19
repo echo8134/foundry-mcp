@@ -17,6 +17,7 @@ import { regionFields } from "./region-data.mjs";
 import { planRegionSync, writeRegionSync } from "./region-methods.mjs";
 import {
   canvasOverflow,
+  gridTypeName,
   levelFields,
   planSceneChanges,
   scenesNamed,
@@ -65,11 +66,6 @@ function scenePath(scene, folders) {
   return folderPath(folders, scene.folder?.id ?? null) ?? [];
 }
 
-function gridType(grid) {
-  if (grid.isGridless) return "gridless";
-  return grid.isSquare ? "square" : "hex";
-}
-
 async function getScene({ sceneId, tokens: tokenIds = [] }) {
   const scene = resolveScene(sceneId);
   const missing = tokenIds.filter((id) => !scene.tokens.has(id));
@@ -92,7 +88,7 @@ async function getScene({ sceneId, tokens: tokenIds = [] }) {
     frame,
     shiftX: scene.shiftX ?? 0,
     shiftY: scene.shiftY ?? 0,
-    grid: { type: gridType(grid), size: grid.size, distance: grid.distance, units: grid.units },
+    grid: { type: gridTypeName(grid.type), size: grid.size, distance: grid.distance, units: grid.units },
     background: { src: scene.initialLevel?.background?.src ?? null },
     levels: scene.levels.map((level) => levelFields(level, scene.initialLevel?.id)),
     walls: scene.walls.map((wall) => {
@@ -381,7 +377,7 @@ async function listScenes({ folder }) {
         height: scene.height,
         shiftX: scene.shiftX ?? 0,
         shiftY: scene.shiftY ?? 0,
-        grid: { type: gridType(grid), size: grid.size, distance: grid.distance, units: grid.units },
+        grid: { type: gridTypeName(grid.type), size: grid.size, distance: grid.distance, units: grid.units },
         background: { src: scene.initialLevel?.background?.src ?? null },
         walls: { total: scene.walls.size, managed: scene.walls.filter(isManaged).length },
         lights: { total: scene.lights.size, managed: scene.lights.filter(isManaged).length },

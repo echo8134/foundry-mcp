@@ -1,6 +1,7 @@
 // The tools that read, render and build a scene: its walls, lights and regions, and the scene itself.
 
 import { z } from "zod";
+import { GRID_TYPE_NAMES } from "../module/scripts/scene-data.mjs";
 import { DOOR_KINDS, DOOR_STATE_NAMES, WALL_KIND_NAMES } from "../module/scripts/wall-kinds.mjs";
 import { defineTool, folderPath, nonBlank, trimmed } from "./tool-spec.ts";
 
@@ -559,7 +560,7 @@ export const SCENE_SPECS = {
           .optional()
           .describe(
             "Scene pixels the map image is moved left against the grid, so a positive value moves the map left and a negative one right. " +
-              "A map point at scene pixel x lies on a grid line when shiftX is x modulo grid.size; a scene pixel is the image pixel times scene width over image width. " +
+              "On a square grid a map point at scene pixel x lies on a grid line when shiftX is x modulo grid.size; a scene pixel is the image pixel times scene width over image width. " +
               "Must stay within the padding in pixels (padding rounded up to whole grid cells), or the call is refused with invalid_params: " +
               "map outside the canvas is not drawn and holds no tokens. Default 0."
           ),
@@ -568,14 +569,25 @@ export const SCENE_SPECS = {
           .int()
           .optional()
           .describe(
-            "Scene pixels the map image is moved up against the grid: positive moves the map up. A point at scene pixel y (image pixel times scene height over image height) lies on a grid line when shiftY is y modulo grid.size. " +
+            "Scene pixels the map image is moved up against the grid: positive moves the map up. On a square grid a point at scene pixel y (image pixel times scene height over image height) lies on a grid line when shiftY is y modulo grid.size. " +
               "Must stay within the padding in pixels, like shiftX."
           ),
         grid: z
           .object({
-            type: z.enum(["square", "gridless"]).optional(),
+            type: z
+              .enum(GRID_TYPE_NAMES)
+              .optional()
+              .describe(
+                "gridless, square, or a hex grid as the scene config names it: hexOddR and hexEvenR are Hexagonal Rows - Odd and - Even " +
+                  "(pointy-topped hexes), hexOddQ and hexEvenQ are Hexagonal Columns - Odd and - Even (flat-topped hexes)."
+              ),
             // Foundry's CONST.GRID_MIN_SIZE
-            size: z.number().int().min(20).optional().describe("Pixels per grid cell."),
+            size: z
+              .number()
+              .int()
+              .min(20)
+              .optional()
+              .describe("Pixels per grid cell; on a hex grid the width of a hex across its flat sides."),
             distance: z.number().positive().optional().describe("Distance one cell stands for."),
             units: trimmed.optional().describe("Unit of the distance, for example ft.")
           })

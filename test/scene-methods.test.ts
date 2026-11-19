@@ -821,6 +821,42 @@ describe("ensure_scene and the grid", () => {
     assert.deepEqual([resized.changed, resized.unapplied, scene._source.grid.size], [["width", "grid.size"], [], 150]);
   });
 
+  it("creates a scene of every grid type through the tool, reads the type back by name, and a rerun writes nothing", async () => {
+    const world = fakeWorld();
+    world.install();
+    const types = ["gridless", "square", "hexOddR", "hexEvenR", "hexOddQ", "hexEvenQ"];
+    for (const [code, type] of types.entries()) {
+      const typed = { ...input, name: `Map ${type}`, grid: { type, size: 100 } };
+      const { id, created } = await viaTool("ensure_scene", typed);
+      const scene = world.scenes.get(id);
+      const listed = (await viaTool("list_scenes", {})).scenes.find((entry: any) => entry.id === id);
+      const writes = world.log.sceneUpdates;
+      const again = await viaTool("ensure_scene", typed);
+      assert.deepEqual(
+        [
+          created,
+          scene._source.grid.type,
+          (await methods.get_scene({ sceneId: id })).grid.type,
+          listed.grid.type,
+          again.changed,
+          world.log.sceneUpdates - writes
+        ],
+        [true, code, type, type, [], 0],
+        type
+      );
+    }
+  });
+
+  it("turns a square scene into a hex one by writing only grid.type, and refuses a grid type Foundry does not have", async () => {
+    const world = fakeWorld();
+    world.install();
+    const { id } = await methods.ensure_scene({ ...input, grid: { type: "square", size: 100 } });
+    const scene = world.scenes.get(id);
+    const hex = await viaTool("ensure_scene", { sceneId: id, grid: { type: "hexOddQ", size: 100 } });
+    assert.deepEqual([hex.changed, hex.unapplied, scene._source.grid.type], [["grid.type"], [], 4]);
+    assert.throws(() => viaTool("ensure_scene", { sceneId: id, grid: { type: "hex" } }), /grid/);
+  });
+
   it("moves what is placed on the scene with the map and keeps it in the same place on it", async () => {
     const world = fakeWorld();
     const scene = world.addScene({ name: "Hall", width: 1000, height: 800, padding: 0.25 });

@@ -37,6 +37,8 @@ function stored(changes: Record<string, any>, current?: Record<string, any>) {
 /**
  * The scene origin and size of SquareGrid#calculateDimensions (common/grid/square.mjs:1349), where padding is rounded up
  * to whole cells, and a shift moves the map against the grid: sceneX = dimensions.x - shiftX (client/documents/scene.mjs:498).
+ * A hex scene gets the same here, although HexagonalGrid#calculateDimensions pads by its own strides
+ * (common/grid/hexagonal.mjs:833), so a test of a hex scene asserts nothing that depends on its dimensions.
  */
 function dimensionsOf(source: Record<string, any>) {
   const { size } = source.grid;
@@ -297,7 +299,7 @@ export function fakeWorld(options: WorldOptions = {}) {
   }
 
   /**
-   * A token on a square or gridless scene, the only grids a test scene uses. Its stored data is `_source`, and the
+   * A token on a square or gridless scene, the only grids a token test uses. Its stored data is `_source`, and the
    * document reads each stored field from it unless `prepared` holds another value for it, which stands in for what
    * data preparation or a running animation puts in place of the stored one. `_id` is null for a token that is not
    * stored yet.

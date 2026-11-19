@@ -906,6 +906,75 @@ try {
     });
 
     await check(
+      "ensure_scene builds a hex scene that get_scene and list_scenes name by its type, a rerun writes nothing, and a token lands on a hex centre",
+      async () => {
+        const hexFolder = `foundry-mcp e2e hex ${Date.now()}`;
+        const hexInput = {
+          name: "foundry-mcp e2e hex",
+          folder: [hexFolder],
+          width: 1000,
+          height: 800,
+          padding: 0.25,
+          grid: { type: "hexOddR", size: 100, distance: 5, units: "ft" }
+        };
+        try {
+          const created = await tool(client, "ensure_scene", hexInput);
+          same(created.created, true, "created");
+          same(
+            await page.evaluate(
+              (id) => [game.scenes.get(id).grid.type, game.scenes.get(id).grid.isHexagonal],
+              created.id
+            ),
+            [2, true],
+            "grid type in the page"
+          );
+          const again = await tool(client, "ensure_scene", hexInput);
+          same([again.id, again.created, again.changed, again.unapplied], [created.id, false, [], []], "rerun");
+          const listed = await tool(client, "list_scenes", { folder: [hexFolder] });
+          same(
+            [
+              (await tool(client, "get_scene", { sceneId: created.id })).grid.type,
+              listed.scenes.map((s) => s.grid.type)
+            ],
+            ["hexOddR", ["hexOddR"]],
+            "reported grid type"
+          );
+
+          const at = [250, 350];
+          const [token] = (
+            await tool(client, "place_tokens", { sceneId: created.id, tokens: [{ actor: made.actorId, at }] })
+          ).tokens;
+          const offCentre = await page.evaluate(
+            (id, tokenId, [x, y]) => {
+              const scene = game.scenes.get(id);
+              const { sceneX, sceneY } = scene.dimensions;
+              const hex = scene.grid.getCenterPoint({ x: Math.round(sceneX + x), y: Math.round(sceneY + y) });
+              const centre = scene.tokens.get(tokenId).getCenterPoint();
+              return Math.max(Math.abs(centre.x - hex.x), Math.abs(centre.y - hex.y));
+            },
+            created.id,
+            token.id,
+            at
+          );
+          assert(offCentre <= 1, `the token's centre is ${offCentre} px from the centre of the hex asked for`);
+          const read = await tool(client, "get_scene", { sceneId: created.id, tokens: [token.id] });
+          const back = await tool(client, "update_tokens", {
+            sceneId: created.id,
+            tokens: [{ id: token.id, at: read.tokenData[0].at }]
+          });
+          same(back.tokens[0].changed, [], "the token's read-back centre passed back");
+        } finally {
+          await page
+            .evaluate(async (name) => {
+              const top = game.folders.find((f) => f.type === "Scene" && f.name === name && !f.folder);
+              await top?.delete({ deleteSubfolders: true, deleteContents: true });
+            }, hexFolder)
+            .catch((e) => console.log(`cleanup: hex folder delete failed: ${e.message}`));
+        }
+      }
+    );
+
+    await check(
       "update_tokens moves one token as a teleport and hides the other, and a repeat writes nothing",
       async () => {
         const args = {

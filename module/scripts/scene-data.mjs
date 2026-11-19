@@ -1,14 +1,21 @@
 // @ts-check
-// Literals are CONST.GRID_TYPES (GRIDLESS 0, SQUARE 1) and CONST.FOG_EXPLORATION_MODES (DISABLED 0, INDIVIDUAL 1),
-// common/constants.mjs.
+// Literals are CONST.GRID_TYPES (GRIDLESS 0, SQUARE 1, HEXODDR 2, HEXEVENR 3, HEXODDQ 4, HEXEVENQ 5) and
+// CONST.FOG_EXPLORATION_MODES (DISABLED 0, INDIVIDUAL 1), common/constants.mjs.
 
 import { getPath, setPath } from "./paths.mjs";
 
 /** @typedef {{on: "scene" | "level", path: string, encode?: (value: any) => unknown, decode?: (stored: any) => unknown, thumbnail?: true, geometry?: true}} SceneField */
 
-const GRID_TYPE_CODES = Object.freeze({ gridless: 0, square: 1 });
+/** @typedef {"gridless" | "square" | "hexOddR" | "hexEvenR" | "hexOddQ" | "hexEvenQ"} GridType */
+
+/** @type {Readonly<Record<GridType, number>>} */
+const GRID_TYPE_CODES = Object.freeze({ gridless: 0, square: 1, hexOddR: 2, hexEvenR: 3, hexOddQ: 4, hexEvenQ: 5 });
+
+/** @type {readonly GridType[]} */
+export const GRID_TYPE_NAMES = /** @type {GridType[]} */ (Object.keys(GRID_TYPE_CODES));
+
 /** @param {number} code */
-const gridTypeName = (code) => Object.entries(GRID_TYPE_CODES).find(([, value]) => value === code)?.[0] ?? "hex";
+export const gridTypeName = (code) => GRID_TYPE_NAMES.find((name) => GRID_TYPE_CODES[name] === code);
 
 /** shiftX and shiftY are nullable NumberFields (common/documents/scene.mjs), and Foundry reads a stored null as 0. */
 const nullAsZero = (/** @type {number | null} */ stored) => stored ?? 0;
@@ -28,7 +35,7 @@ const SCENE_FIELDS = Object.freeze({
     on: "scene",
     path: "grid.type",
     geometry: true,
-    encode: (/** @type {keyof typeof GRID_TYPE_CODES} */ type) => GRID_TYPE_CODES[type],
+    encode: (/** @type {GridType} */ type) => GRID_TYPE_CODES[type],
     decode: gridTypeName
   },
   "grid.size": { on: "scene", path: "grid.size", geometry: true },
