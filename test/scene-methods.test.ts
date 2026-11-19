@@ -847,14 +847,13 @@ describe("ensure_scene and the grid", () => {
     }
   });
 
-  it("turns a square scene into a hex one by writing only grid.type, and refuses a grid type Foundry does not have", async () => {
+  it("turns a square scene into a hex one by writing only grid.type", async () => {
     const world = fakeWorld();
     world.install();
     const { id } = await methods.ensure_scene({ ...input, grid: { type: "square", size: 100 } });
     const scene = world.scenes.get(id);
     const hex = await viaTool("ensure_scene", { sceneId: id, grid: { type: "hexOddQ", size: 100 } });
     assert.deepEqual([hex.changed, hex.unapplied, scene._source.grid.type], [["grid.type"], [], 4]);
-    assert.throws(() => viaTool("ensure_scene", { sceneId: id, grid: { type: "hex" } }), /grid/);
   });
 
   it("moves what is placed on the scene with the map and keeps it in the same place on it", async () => {

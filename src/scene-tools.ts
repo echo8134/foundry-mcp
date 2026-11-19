@@ -223,7 +223,7 @@ export const SAFER_SCENE_ID =
 export const SCENE_SPECS = {
   get_scene: defineTool({
     description:
-      'Read a Foundry scene: id, name, navName ("" when none), folder (path of folder names from the root), active, viewed, shiftX and shiftY (the map shift, see ensure_scene), grid, ' +
+      'Read a Foundry scene: id, name, navName ("" when none), folder (path of folder names from the root), active, viewed, shiftX and shiftY (the map shift, see ensure_scene), grid (type as ensure_scene takes it), ' +
       "background image path, levels, every wall, every ambient light, every token and every region. The returned `frame` " +
       "is the scene size in pixels. Wall coordinates `c` ([x1, y1, x2, y2]) are in that frame (scene pixels). To " +
       "compare them with an image from get_scene_image, multiply by imageFrame / sceneFrame, because the image " +
@@ -493,7 +493,7 @@ export const SCENE_SPECS = {
     description:
       "List the scenes of the world and the scene folders, without loading any of them. Each scene has id, name, " +
       "navName, folder (path of folder names from the root, [] at the root), active, viewed, width and height " +
-      "(of the map, without padding), shiftX and shiftY, grid, background image path and wall, light and token counts (each with total, " +
+      "(of the map, without padding), shiftX and shiftY, grid (type as ensure_scene takes it), background image path and wall, light and token counts (each with total, " +
       "and managed: the bridge-made ones). Pass folder (a path of folder names) to list only that folder and everything under it; " +
       "[] or no folder lists everything. " +
       "Use it to find a scene id for ensure_scene or the wall tools.",
@@ -561,7 +561,7 @@ export const SCENE_SPECS = {
           .describe(
             "Scene pixels the map image is moved left against the grid, so a positive value moves the map left and a negative one right. " +
               "On a square grid a map point at scene pixel x lies on a grid line when shiftX is x modulo grid.size; a scene pixel is the image pixel times scene width over image width. " +
-              "Must stay within the padding in pixels (padding rounded up to whole grid cells), or the call is refused with invalid_params: " +
+              "Must stay within the padding in pixels (padding as Foundry rounds it for the grid), or the call is refused with invalid_params: " +
               "map outside the canvas is not drawn and holds no tokens. Default 0."
           ),
         shiftY: z
