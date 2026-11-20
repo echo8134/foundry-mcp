@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest something you want to do in Foundry through your MCP client.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task and what gets in your way today.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: Give an example request you would make in your MCP client and the result you would expect in Foundry.

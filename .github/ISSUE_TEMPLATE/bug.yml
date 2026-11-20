@@ -1,0 +1,21 @@
+name: Bug report
+description: Report a problem with the MCP server or Foundry module.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What went wrong?
+      description: Describe what you expected and what happened. Include the error message if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Describe the world setup and the steps that triggered the problem. Include the MCP tool name and input if relevant. Omit the bridge token and private world data.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Versions
+      description: Which versions of Foundry VTT, foundry-mcp, the game system and the MCP client were you using?

@@ -22,6 +22,18 @@ An MCP client such as Claude Code can:
 - create, change and delete documents of every type but settings, a journal entry with its pages in one call, in the world or in an unlocked compendium pack, with the same checks before anything is written
 - read the stored field names of every document type
 
+## Release notes
+
+In a pull request, write one bullet under `Release Notes:`, for example `- Added hex grid support to ensure_scene.` Describe what changes for a GM or an MCP client. Start with `Added`, `Improved`, `Fixed` or `Breaking:` to choose the section. Use `- N/A` for internal changes.
+
+When you push a version tag, the workflow publishes the notes since the previous tag in [GitHub Releases](https://github.com/echo8134/foundry-mcp/releases). For a direct commit it uses the commit subject. For a PR without a release note it uses the PR title. The prefixes `feat:`, `perf:` and `fix:` place these entries under features, improvements and fixes.
+
+With `gh` signed in, you can preview the notes for an existing tag locally.
+
+```sh
+GITHUB_REPOSITORY=echo8134/foundry-mcp node scripts/release-notes.mjs v0.6.0
+```
+
 ## License
 
 MIT, see `LICENSE`.
