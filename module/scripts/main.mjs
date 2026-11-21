@@ -53,7 +53,7 @@ Hooks.once("init", () => {
 function describe(problem) {
   switch (problem.kind) {
     case "no-token":
-      return 'foundry-mcp: no bridge token is set, so the bridge does not connect. Run "npm run -s token" in the foundry-mcp folder yourself, not through an AI agent, and paste the output into Configure Settings, Foundry MCP (local bridge), Bridge token.';
+      return `foundry-mcp: no bridge token is set, so the bridge does not connect. Run "npm run -s token" in the foundry-mcp folder yourself, not through an AI agent, and paste the output into Configure Settings, ${game.modules.get(MODULE_ID).title}, Bridge token.`;
     case "insecure-context":
       return `foundry-mcp: the bridge needs a secure page and does not connect. Open Foundry via http://localhost:${globalThis.location?.port || 30000} or https.`;
     case "loopback-ip-page":
