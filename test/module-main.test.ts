@@ -28,7 +28,7 @@ async function boot(role: number, initial: { port?: number; enabled?: boolean; t
     user: null,
     version: "14.370",
     world: { id: "w", title: "W" },
-    modules: new Map([["foundry-mcp", { version: "0.1.0" }]]),
+    modules: new Map([["foundry-mcp", { version: "0.1.0", title: "Test MCP Bridge" }]]),
     settings: {
       register: (_ns: string, key: string, config: SettingConfig) => (registered[key] = config),
       get: (_ns: string, key: string) => values[key]
@@ -134,7 +134,7 @@ describe("module main.mjs", () => {
     assert.equal(warnings.length, 1);
     assert.match(warnings[0]!, /npm run -s token/);
     assert.match(warnings[0]!, /not through an AI agent/);
-    assert.match(warnings[0]!, /Bridge token/);
+    assert.match(warnings[0]!, /Configure Settings, Test MCP Bridge, Bridge token/);
   });
 
   it("opens no socket on a page opened at 127.0.0.1 and tells the Gamemaster to use localhost and why, and connects on a localhost page", async () => {
