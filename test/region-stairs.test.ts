@@ -242,6 +242,42 @@ describe("sync_regions and the stairs between levels", () => {
     assert.deepEqual(await destinationsOf("Down"), [named("Loft")[0].uuid, named("Up")[0].uuid]);
   });
 
+  for (const source of ["a new region", "an existing region", "an existing behavior"]) {
+    it(`keeps a vetoed same-call destination pending on ${source} through readback and retry`, async () => {
+      const levels = ["upper"];
+      const byHand = world.addDocument("Region", { name: "Porch", levels }, { parent: scene });
+      if (source === "an existing region") await sync({ levels, regions: [{ name: "Door", shapes: [box(0, 0)] }] });
+      if (source === "an existing behavior") await sync({ levels, regions: [door("Door", byHand.uuid)] });
+      const request = {
+        levels,
+        regions: [door("Door", { region: "Landing" }, byHand.uuid, { region: "Loft" }), door("Landing"), door("Loft")]
+      };
+      world.control.vetoDocument = (document, data) => document === "Region" && data.name === "Landing";
+      const first = await sync(request);
+      const behavior = first.regions[0].behaviors[0];
+      assert.match(first.regions[1].error, /Foundry created nothing/);
+      assert.deepEqual([behavior.pending, behavior.unapplied], [["Landing"], []]);
+      const loft = named("Loft")[0];
+      assert.deepEqual(await destinationsOf("Door"), [byHand.uuid, loft.uuid, { region: "Landing" }]);
+      assert.deepEqual(behaviorOf("Door").flags, waitingFor("Landing"));
+
+      const before = writes();
+      const { regions } = await viaTool("get_scene", { sceneId: scene.id });
+      assert.equal((await sync({ levels, regions })).updated, 0);
+      assert.deepEqual(writes(), before);
+      assert.equal((await sync(request)).updated, 0);
+      assert.deepEqual(writes().slice(before.length), ["create Region"]);
+
+      world.control.vetoDocument = null;
+      const retry = await sync(request);
+      assert.deepEqual([retry.regions[0].behaviors[0].pending, behaviorOf("Door").flags], [undefined, MANAGED]);
+      assert.deepEqual(await destinationsOf("Door"), [named("Landing")[0].uuid, byHand.uuid, loft.uuid]);
+      const settled = writes();
+      assert.equal((await sync(request)).updated, 0);
+      assert.deepEqual(writes(), settled);
+    });
+  }
+
   it("names a destination it led on when a later step of the call fails", async () => {
     await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
     world.addDocument("Region", { name: "Old", levels: ["upper"], flags: MANAGED }, { parent: scene });
