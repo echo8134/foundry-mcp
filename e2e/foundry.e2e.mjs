@@ -3034,6 +3034,33 @@ try {
       }
     );
 
+    await check("a refused destination stays pending and resolves when the hook allows creation", async () => {
+      const landing = { name: "e2e landing", shapes: [box(100, 100, 80, 80)] };
+      const source = door("e2e door", [box(220, 100, 80, 80)], landing.name);
+      const args = { sceneId: levelSceneId, levels: [ground.id], regions: [source, landing] };
+      const hook = await page.evaluate(
+        (sceneId, name) =>
+          Hooks.on("preCreateRegion", (region) => {
+            if (region.parent.id === sceneId && region.name === name) return false;
+          }),
+        levelSceneId,
+        landing.name
+      );
+      try {
+        const partial = await tool(client, "sync_regions", args);
+        assert(partial.regions[1].error, "Foundry accepted the destination despite the hook");
+        same(partial.regions[0].behaviors[0].pending, [landing.name], "the refused destination");
+        const [region] = (await pageRegions()).filter((region) => region.name === source.name);
+        same(region.behaviors[0].stored, [], "stored teleport destinations after the veto");
+      } finally {
+        await page.evaluate((id) => Hooks.off("preCreateRegion", id), hook);
+      }
+      await tool(client, "sync_regions", args);
+      const [region] = (await pageRegions()).filter((region) => region.name === source.name);
+      same(region.behaviors[0].leadsTo, [landing.name], "the destination after retry");
+      await tool(client, "sync_regions", { ...args, regions: [] });
+    });
+
     await check(
       "sync_regions builds a stair that lines up, and in two calls a pair of teleport regions that name each other across levels",
       async () => {

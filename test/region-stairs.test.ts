@@ -52,7 +52,7 @@ describe("sync_regions and the stairs between levels", () => {
       [await destinationsOf("East"), await destinationsOf("West")],
       [[`${scene.uuid}.Region.${west.id}`], [`${scene.uuid}.Region.${east.id}`]]
     );
-    assert.deepEqual(writes(), ["create Region"]);
+    assert.deepEqual(writes(), ["create Region", "create RegionBehavior", "create RegionBehavior"]);
   });
 
   it("writes nothing on the next run although Foundry keeps a destination in another spelling than the given one", async () => {
@@ -242,6 +242,91 @@ describe("sync_regions and the stairs between levels", () => {
     assert.deepEqual(await destinationsOf("Down"), [named("Loft")[0].uuid, named("Up")[0].uuid]);
   });
 
+  for (const source of ["a new region", "an existing region", "an existing behavior"]) {
+    it(`keeps a vetoed same-call destination pending on ${source} through readback and retry`, async () => {
+      const levels = ["upper"];
+      const byHand = world.addDocument("Region", { name: "Porch", levels }, { parent: scene });
+      if (source === "an existing region") await sync({ levels, regions: [{ name: "Door", shapes: [box(0, 0)] }] });
+      if (source === "an existing behavior") await sync({ levels, regions: [door("Door", byHand.uuid)] });
+      const request = {
+        levels,
+        regions: [door("Door", { region: "Landing" }, byHand.uuid, { region: "Loft" }), door("Landing"), door("Loft")]
+      };
+      world.control.vetoDocument = (document, data) => document === "Region" && data.name === "Landing";
+      const first = await sync(request);
+      const behavior = first.regions[0].behaviors[0];
+      assert.match(first.regions[1].error, /Foundry created nothing/);
+      assert.deepEqual([behavior.pending, behavior.unapplied], [["Landing"], []]);
+      const loft = named("Loft")[0];
+      assert.deepEqual(await destinationsOf("Door"), [byHand.uuid, loft.uuid, { region: "Landing" }]);
+      assert.deepEqual(behaviorOf("Door").flags, waitingFor("Landing"));
+
+      const before = writes();
+      const { regions } = await viaTool("get_scene", { sceneId: scene.id });
+      assert.equal((await sync({ levels, regions })).updated, 0);
+      assert.deepEqual(writes(), before);
+      assert.equal((await sync(request)).updated, 0);
+      assert.deepEqual(writes().slice(before.length), ["create Region"]);
+
+      world.control.vetoDocument = null;
+      const retry = await sync(request);
+      assert.deepEqual([retry.regions[0].behaviors[0].pending, behaviorOf("Door").flags], [undefined, MANAGED]);
+      assert.deepEqual(await destinationsOf("Door"), [named("Landing")[0].uuid, byHand.uuid, loft.uuid]);
+      const settled = writes();
+      assert.equal((await sync(request)).updated, 0);
+      assert.deepEqual(writes(), settled);
+    });
+  }
+
+  it("reports the stored pending names when a hook vetoes the behavior update too", async () => {
+    const levels = ["upper"];
+    await sync({ levels, regions: [door("Door", { region: "Cellar" })] });
+    world.control.vetoDocument = (document, data) => document === "Region" && data.name === "Landing";
+    world.control.vetoDocumentUpdate = (document) => document === "RegionBehavior";
+    const result = await sync({ levels, regions: [door("Door", { region: "Landing" }), door("Landing")] });
+    const [behavior] = result.regions[0].behaviors;
+    assert.deepEqual([behavior.pending, behavior.unapplied], [["Cellar"], [PENDING]]);
+    assert.deepEqual(await destinationsOf("Door"), [{ region: "Cellar" }]);
+  });
+
+  it("reports the regions created before a dependent behavior write fails and restores its siblings in order", async () => {
+    const request = {
+      levels: ["upper"],
+      regions: [
+        {
+          name: "Door",
+          shapes: [box(0, 0)],
+          behaviors: [
+            { type: "pauseGame", name: "First" },
+            ...teleport({ region: "Landing" }),
+            { type: "pauseGame", name: "Last" }
+          ]
+        },
+        door("Landing")
+      ]
+    };
+    world.control.documentError = (action, document) =>
+      action === "create" && document === "RegionBehavior" ? "connection lost" : undefined;
+    await assert.rejects(
+      sync(request),
+      (error: unknown) =>
+        refused("foundry_error", /creating the behaviors of the region Door \(connection lost\)/)(error) &&
+        refused("foundry_error", /region Door \(\w+\) created; region Landing \(\w+\) created/)(error)
+    );
+    assert.equal(named("Door")[0].behaviors.size, 0);
+
+    world.control.documentError = null;
+    const retry = await sync(request);
+    assert.deepEqual([retry.created, retry.updated], [0, 1]);
+    const read = await viaTool("get_scene", { sceneId: scene.id });
+    const { behaviors } = read.regions.find((region: any) => region.name === "Door");
+    assert.deepEqual(
+      behaviors.map((behavior: any) => behavior.name),
+      ["First", "", "Last"]
+    );
+    assert.deepEqual(behaviors[1].system.destinations, [named("Landing")[0].uuid]);
+  });
+
   it("names a destination it led on when a later step of the call fails", async () => {
     await sync({ levels: ["lvl1"], regions: [door("Down", { region: "Up" })] });
     world.addDocument("Region", { name: "Old", levels: ["upper"], flags: MANAGED }, { parent: scene });
@@ -258,6 +343,7 @@ describe("sync_regions and the stairs between levels", () => {
   it("reports nothing unapplied when Foundry stores the destination of a new behavior relative to it", async () => {
     // On Foundry 14.370 a creation was seen to keep the UUID it is given, and an update to store it relative to the
     // behavior. Either spelling names the same region, whichever a creation stores.
+    await sync({ levels: ["upper"], regions: [{ name: "West", shapes: [box(0, 0)] }] });
     world.control.filterDocumentData = (document: string, source: Record<string, any>) => {
       if (document !== "Region") return;
       for (const behavior of source.behaviors) {
