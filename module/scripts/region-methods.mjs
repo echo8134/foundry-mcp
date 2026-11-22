@@ -32,6 +32,7 @@ import { runSteps, updatesOf, writtenBefore, writtenPart, wrote } from "./write-
  * @property {Record<string, any> | null} data the data to create it from
  * @property {import("./data-diff.mjs").Asked} write
  * @property {Pending[]} pending
+ * @property {() => BehaviorPlan} [afterCreate] applies the results of creating regions to the validated references
  */
 /**
  * @typedef {object} RegionPlan what one entry of the request leads to
@@ -41,6 +42,7 @@ import { runSteps, updatesOf, writtenBefore, writtenPart, wrote } from "./write-
  * @property {Record<string, any> | null} data the data to create it from, without its behaviors
  * @property {import("./data-diff.mjs").Asked} write
  * @property {BehaviorPlan[] | null} behaviors null for an entry that says nothing of behaviors
+ * @property {boolean} deferred whether a new region's behaviors must be created after the region batch
  * @property {any[]} stale the bridge-made behaviors of the region that the entry does not name
  */
 /**
@@ -53,7 +55,7 @@ import { runSteps, updatesOf, writtenBefore, writtenPart, wrote } from "./write-
  * @property {(Pending & Target)[]} found the names that lead to a region now, each with the region
  */
 /** @typedef {{regions: RegionPlan[], deleted: any[], handPlaced: {id: string, name: string}[], waiting: WaitingPlan[]}} Plan */
-/** @typedef {{id: string, uuid: string, levels: number}} Target a region a name leads to, and how many levels it is on */
+/** @typedef {{id: string, uuid: string, levels: number, proposed?: string}} Target a region a name leads to, and how many levels it is on */
 
 const PENDING_FLAG = `flags.${FLAG_SCOPE}.pending`;
 
@@ -135,7 +137,7 @@ function refuseLosingHandMade(deleted) {
  * The bridge-made regions of the scene that have a name once the call is written: the one of the call, under the id
  * it has or is created under, and those of other level sets. A region made by hand is named by its UUID.
  * @param {any} scene
- * @param {{name: string, id: string}[]} claims the regions of the call
+ * @param {{name: string, id: string, document: any}[]} claims the regions of the call
  * @param {any[]} owned the bridge-made regions of the call's level set
  * @param {readonly string[]} levels
  * @returns {(name: string) => {own: Target[], others: Target[]}}
@@ -145,7 +147,12 @@ function namedRegions(scene, claims, owned, levels) {
   return (name) => ({
     own: claims
       .filter((claim) => claim.name === name)
-      .map((claim) => ({ id: claim.id, uuid: `${scene.uuid}.Region.${claim.id}`, levels: count(levels) })),
+      .map((claim) => ({
+        id: claim.id,
+        uuid: `${scene.uuid}.Region.${claim.id}`,
+        levels: count(levels),
+        ...(!claim.document && { proposed: name })
+      })),
     others: scene.regions
       .filter((region) => isManaged(region) && region.name === name && !owned.includes(region))
       .map((region) => ({ id: region.id, uuid: region.uuid, levels: count(region.levels) }))
@@ -201,37 +208,41 @@ function referenceResolver(named, deleted) {
   };
 }
 
-/**
- * The system data of a behavior with each reference as an absolute UUID, and the regions it names that do not exist
- * yet, which are left out of the data.
- * @param {string} type
- * @param {unknown} system
- * @param {Resolve} resolve
- * @param {string} at
- * @returns {Promise<{system: unknown, pending: Pending[]}>}
- */
-async function withReferences(type, system, resolve, at) {
-  if (!isPlainObject(system)) return { system, pending: [] };
-  const resolved = { ...system };
-  const pending = [];
+/** Validate all references before the first write, including targets whose region the call still has to create. */
+async function checkedReferences(type, system, resolve, at) {
+  const references = [];
+  if (!isPlainObject(system)) return references;
   for (const { key, list, names } of referenceFields(type)) {
     const given = system[key];
     if (given === undefined || given === null) continue;
     if (list && !Array.isArray(given)) throw refuse(`system.${key} must be a list.`, at);
-    const uuids = [];
+    const targets = [];
     for (const [index, value] of (list ? given : [given]).entries()) {
       const place = `${at}system.${key}${list ? `[${index}]` : ""}: `;
       const target = await resolve(value, names, place);
-      if ("pending" in target) {
-        pending.push({ field: key, region: target.pending });
-        continue;
-      }
-      refuseRuled(BEHAVIOR_CHECKS[type]?.target?.(target), place);
-      uuids.push(target.uuid);
+      if (!("pending" in target)) refuseRuled(BEHAVIOR_CHECKS[type]?.target?.(target), place);
+      targets.push(target);
     }
-    resolved[key] = list ? [...new Set(uuids)] : (uuids[0] ?? null);
+    references.push({ key, list, targets });
   }
-  return { system: resolved, pending };
+  return references;
+}
+
+/** During preflight a proposed target uses its reserved id. After creation only stored targets get a UUID. */
+function referenceData(references, scene = null) {
+  const fields = {};
+  const pending = [];
+  for (const { key, list, targets } of references) {
+    const uuids = [];
+    for (const target of targets) {
+      if ("pending" in target) pending.push({ field: key, region: target.pending });
+      else if (target.proposed !== undefined && scene && !scene.regions.has(target.id))
+        pending.push({ field: key, region: target.proposed });
+      else uuids.push(target.uuid);
+    }
+    fields[key] = list ? [...new Set(uuids)] : (uuids[0] ?? null);
+  }
+  return { fields, pending };
 }
 
 /**
@@ -269,38 +280,62 @@ async function planBehaviors(region, stored, entries, where, { scene, levels, re
       `behaviors of the region ${region.name} are the ${key}`,
       at
     );
-    const { system, pending: open } = await withReferences(type, fields.system, resolve, at);
+    const references = await checkedReferences(type, fields.system, resolve, at);
+    const initial = referenceData(references);
     // A field the entry leaves out keeps the names it waits for, as it keeps its stored destinations.
     const kept = behavior ? pendingOf(behavior).filter(({ field }) => fields.system?.[field] === undefined) : [];
-    const pending = [...kept, ...open];
-    const stated = { ...fields, name, ...(system !== undefined && { system }) };
+    const stated = { ...fields, name };
+    if (isPlainObject(fields.system)) stated.system = { ...fields.system, ...initial.fields };
+    const id = behavior?.id ?? foundry.utils.randomID();
+    let data = null;
+    let write;
     if (behavior) {
       const asked = withoutOwnFlags(kind, stated, behavior._source);
       refuseRuled(rulesOf("RegionBehavior").update?.(behavior, asked, []), at);
-      const write = await planUpdate(kind, behavior, asked, { where: at, same: sameReferences(behavior) });
-      behaviors.push({
-        id: behavior.id,
-        name,
-        type,
-        document: behavior,
-        data: null,
-        write: withPending(write, pending),
-        pending
-      });
+      write = await planUpdate(kind, behavior, asked, { where: at, same: sameReferences(behavior) });
     } else {
       const asked = { ...stated, type };
       refuseRuled(rulesOf("RegionBehavior").create?.(asked), at);
       checkAsked(kind, asked, { type, where: at });
-      // Created under an id made here, so that the result finds the behavior whatever else the region holds.
-      const id = foundry.utils.randomID();
-      const data = { ...structuredClone(asked), _id: id, flags: { ...asked.flags, ...bridgeFlag(pending) } };
-      const { write } = await planBuilt(kind, CONFIG.RegionBehavior.documentClass, data, asked, {
+      data = { ...structuredClone(asked), _id: id, flags: { ...asked.flags, ...bridgeFlag(initial.pending) } };
+      ({ write } = await planBuilt(kind, CONFIG.RegionBehavior.documentClass, data, asked, {
         parent: region,
         where: at,
         same: sameReferences
-      });
-      behaviors.push({ id, name, type, document: null, data, write, pending });
+      }));
     }
+    const pending = [...kept, ...initial.pending];
+    const plan = {
+      id,
+      name,
+      type,
+      document: behavior,
+      data,
+      write: withPending(write, pending),
+      pending
+    };
+    const proposed = references.some(({ targets }) =>
+      targets.some((target) => target.proposed !== undefined && target.id !== region.id)
+    );
+    if (proposed) {
+      plan.afterCreate = () => {
+        const landed = referenceData(references, scene);
+        if (landed.pending.length === initial.pending.length) return plan;
+        const pending = [...kept, ...landed.pending];
+        const wanted = { ...write.wanted, system: { ...write.wanted.system, ...landed.fields } };
+        return {
+          ...plan,
+          pending,
+          write: withPending({ ...write, wanted }, pending),
+          data: data && {
+            ...data,
+            system: { ...data.system, ...landed.fields },
+            flags: { ...data.flags, ...bridgeFlag(pending) }
+          }
+        };
+      };
+    }
+    behaviors.push(plan);
   }
   return { behaviors, stale: mine.filter((behavior) => !behaviors.some((plan) => plan.document === behavior)) };
 }
@@ -346,7 +381,8 @@ async function planRegion({ entry, where, document, id }, context) {
     entry.behaviors === undefined
       ? { behaviors: null, stale: [] }
       : await planBehaviors(region, document !== null, entry.behaviors, where, context);
-  return { id, name: entry.name, document, data, write, behaviors, stale };
+  const deferred = !document && (behaviors ?? []).some((behavior) => behavior.afterCreate);
+  return { id, name: entry.name, document, data, write, behaviors, stale, deferred };
 }
 
 /**
@@ -475,7 +511,8 @@ export async function planRegionSync(scene, { frame, levels = [], regions }) {
 /** What became of a behavior of an entry, read from its region under the id of its plan. */
 function behaviorOutcome(plan, region, before) {
   const behavior = region.behaviors.get(plan.id);
-  const pending = plan.pending.length > 0 ? { pending: plan.pending.map((one) => one.region) } : {};
+  const stored = behavior ? pendingOf(behavior) : plan.pending;
+  const pending = stored.length > 0 ? { pending: stored.map((one) => one.region) } : {};
   if (!behavior) return { name: plan.name, type: plan.type, created: false, error: NOT_CREATED, ...pending };
   return {
     id: behavior.id,
@@ -550,54 +587,52 @@ function describeWritten({ regions, resolved = [], deleted }) {
 
 const some = (list, send) => list.length > 0 && send(list);
 
-/**
- * The Foundry calls that write the regions of a plan, in their order: the new regions in one call, each with its
- * behaviors, the changed regions in one, then for each region that was there its new, its changed and its dropped
- * behaviors. A call that would send nothing is not made.
- */
+/** Keep siblings in entry order when one behavior has to wait for its destination region. */
+function createRegions(scene, regions) {
+  const data = regions
+    .filter((region) => !region.document)
+    .map((region) => ({
+      ...structuredClone(region.data),
+      behaviors: region.deferred ? [] : (region.behaviors ?? []).map((behavior) => structuredClone(behavior.data))
+    }));
+  return some(data, (data) => CONFIG.Region.documentClass.createDocuments(data, { parent: scene, keepId: true }));
+}
+
+/** The remaining behavior writes, against parents and destinations that now exist. */
 function regionSteps(scene, plan) {
   const Region = CONFIG.Region.documentClass;
   const Behavior = CONFIG.RegionBehavior.documentClass;
-  const creations = plan.regions.filter((region) => !region.document);
-  const changed = plan.regions.filter((region) => region.document);
   return [
     {
-      what: "creating the regions",
-      run: () =>
-        some(
-          creations.map((region) => ({
-            ...structuredClone(region.data),
-            behaviors: (region.behaviors ?? []).map((behavior) => structuredClone(behavior.data))
-          })),
-          (data) => Region.createDocuments(data, { parent: scene, keepId: true })
-        )
-    },
-    {
       what: "updating the regions",
-      run: () => some(updatesOf(changed), (updates) => Region.updateDocuments(updates, { parent: scene }))
+      run: () => some(updatesOf(plan.regions), (updates) => Region.updateDocuments(updates, { parent: scene }))
     },
-    ...changed.flatMap(({ name, document: parent, behaviors, stale }) => [
-      {
-        what: `creating the behaviors of the region ${name}`,
-        run: () =>
-          some(
-            (behaviors ?? []).flatMap((behavior) => (behavior.document ? [] : [structuredClone(behavior.data)])),
-            (data) => Behavior.createDocuments(data, { parent, keepId: true })
-          )
-      },
-      {
-        what: `updating the behaviors of the region ${name}`,
-        run: () => some(updatesOf(behaviors ?? []), (updates) => Behavior.updateDocuments(updates, { parent }))
-      },
-      {
-        what: `deleting behaviors of the region ${name}`,
-        run: () =>
-          some(
-            stale.map((behavior) => behavior.id),
-            (ids) => Behavior.deleteDocuments(ids, { parent })
-          )
-      }
-    ])
+    ...plan.regions.flatMap(({ name, id, document, deferred, behaviors, stale }) => {
+      const parent = document ?? (deferred && scene.regions.get(id));
+      if (!parent) return [];
+      return [
+        {
+          what: `creating the behaviors of the region ${name}`,
+          run: () =>
+            some(
+              (behaviors ?? []).flatMap((behavior) => (behavior.document ? [] : [structuredClone(behavior.data)])),
+              (data) => Behavior.createDocuments(data, { parent, keepId: true })
+            )
+        },
+        {
+          what: `updating the behaviors of the region ${name}`,
+          run: () => some(updatesOf(behaviors ?? []), (updates) => Behavior.updateDocuments(updates, { parent }))
+        },
+        {
+          what: `deleting behaviors of the region ${name}`,
+          run: () =>
+            some(
+              stale.map((behavior) => behavior.id),
+              (ids) => Behavior.deleteDocuments(ids, { parent })
+            )
+        }
+      ];
+    })
   ];
 }
 
@@ -636,8 +671,14 @@ export async function writeRegionSync(scene, plan) {
   const existing = [...plan.regions, ...plan.regions.flatMap((region) => region.behaviors ?? []), ...plan.waiting];
   for (const { document } of existing) if (document) before.set(document, document.toObject());
   const describe = (written) => () => describeWritten(resultOf(scene, written, before));
-  await runSteps(regionSteps(scene, plan), describe(plan));
-  const landed = { ...plan, waiting: await landedWaiting(scene, plan.waiting) };
+  await runSteps([{ what: "creating the regions", run: () => createRegions(scene, plan.regions) }], describe(plan));
+  const regions = plan.regions.map((region) => ({
+    ...region,
+    behaviors: region.behaviors?.map((behavior) => behavior.afterCreate?.() ?? behavior) ?? null
+  }));
+  const current = { ...plan, regions };
+  await runSteps(regionSteps(scene, current), describe(current));
+  const landed = { ...current, waiting: await landedWaiting(scene, plan.waiting) };
   await runSteps(closingSteps(scene, landed), describe(landed));
   return resultOf(scene, landed, before);
 }
