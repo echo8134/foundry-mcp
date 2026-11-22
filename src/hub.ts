@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { type WebSocket, WebSocketServer } from "ws";
 import { Channel, newNonce, toBase64url } from "../module/scripts/channel.mjs";
+import { AutomaticClient, type AutomaticClientOptions } from "./automatic-client.ts";
 import {
   type BridgeInfo,
   type Challenge,
@@ -42,13 +43,14 @@ const MAX_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const REFUSED_HELLO_FRESH_MS = 30_000;
 
 export const DEFAULT_PORT = 31800;
-export const DEFAULT_ORIGINS = ["http://localhost:30000"];
+export const DEFAULT_ORIGINS = ["http://localhost:30000"] as const;
 
 type HubOptions = {
   token: Token;
   port?: number;
   allowedOrigins?: readonly string[];
   handshakeTimeoutMs?: number;
+  automaticClient?: AutomaticClientOptions;
   log?: (message: string) => void;
   now?: () => number;
 };
@@ -99,6 +101,7 @@ export class BridgeHub {
   /** Named by a peer that proved nothing, so it only words the no_bridge error. */
   private refusedHello: { protocol: number; at: number } | null = null;
   private relisten: Promise<ListenerState> | null = null;
+  private readonly automaticClient?: AutomaticClient;
   private readonly unauthenticated = new Map<WebSocket, () => void>();
   private readonly token: Token;
   private readonly requestedPort: number;
@@ -114,6 +117,8 @@ export class BridgeHub {
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 5000;
     this.log = options.log ?? (() => {});
     this.now = options.now ?? Date.now;
+    if (options.automaticClient)
+      this.automaticClient = new AutomaticClient(options.automaticClient, () => this.bridgeInfo, this.log);
   }
 
   get state(): ListenerState {
@@ -160,30 +165,48 @@ export class BridgeHub {
   }
 
   async stop(): Promise<void> {
+    if (this.relisten) await this.relisten;
     const listener = this.listener;
     this.listener = { kind: "stopped" };
-    if (listener.kind !== "listening") return;
+    const closingClient = this.automaticClient?.release(new Error("The MCP server is shutting down."));
+    if (listener.kind !== "listening") return closingClient;
     for (const ws of listener.wss.clients) ws.terminate();
     listener.wss.close();
     await new Promise<void>((resolve) => {
       listener.http.close(() => resolve());
       listener.http.closeAllConnections();
     });
+    await closingClient;
   }
 
   async request(
     method: Method,
     params: Record<string, unknown>,
-    options: { timeoutMs?: number } = {}
+    options: { timeoutMs?: number; signal?: AbortSignal } = {}
   ): Promise<unknown> {
+    const { signal } = options;
+    signal?.throwIfAborted();
     const timeoutMs = options.timeoutMs ?? 30_000;
     if (this.listener.kind === "unavailable") {
       this.relisten ??= this.start().finally(() => (this.relisten = null));
       await this.relisten;
     }
     if (this.listener.kind === "unavailable") throw new BridgeError("port_unavailable", this.listener.message);
+    if (this.listener.kind === "listening" && this.bridge.kind !== "ready" && this.automaticClient) {
+      try {
+        await this.automaticClient.waitForBridge(this.port, signal);
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw new BridgeError(
+          "no_bridge",
+          `${error instanceof Error ? error.message : String(error)} ${this.noBridgeMessage()}`
+        );
+      }
+    }
+    signal?.throwIfAborted();
     const bridge = this.bridge;
-    if (bridge.kind !== "ready") throw new BridgeError("no_bridge", this.noBridgeMessage());
+    if (this.listener.kind !== "listening" || bridge.kind !== "ready")
+      throw new BridgeError("no_bridge", this.noBridgeMessage());
     const surface = bridge.info.surface ?? 1;
     if (surface < SURFACE_NUMBER) throw new BridgeError("outdated_module", outdatedModuleMessage(surface));
     const id = randomUUID();
@@ -333,6 +356,7 @@ export class BridgeHub {
           state = { kind: "ready", channel: current.channel };
           this.bridge = { kind: "ready", ws, channel: current.channel, info: inbound.info, pending: new Map() };
           this.refusedHello = null;
+          this.automaticClient?.bridgeReady();
           const { foundry, world, user } = inbound.info;
           this.log(`bridge ready: Foundry ${foundry}, world ${world.id}, user ${user.name}`);
           return;
@@ -380,6 +404,7 @@ export class BridgeHub {
     if (this.bridge.kind !== "ready" || this.bridge.ws !== ws) return;
     const { pending } = this.bridge;
     this.bridge = { kind: "none" };
+    this.automaticClient?.release();
     this.log(message);
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
