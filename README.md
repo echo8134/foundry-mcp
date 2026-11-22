@@ -2,6 +2,22 @@
 
 A local MCP server and a Foundry VTT module.
 
+## Connect to a world
+
+Enable the `foundry-mcp` module in the world. The server uses the first authenticated Gamemaster browser to connect. If you already paired a browser with the bridge token, you can keep using it.
+
+To use MCP with your Foundry tab closed, install Chromium on the machine that runs the MCP server. Create a dedicated Foundry user with the Gamemaster role. Set the following environment variables in your MCP server configuration as needed.
+
+| Variable                 | Default                                 | Purpose                                                                                                                                |
+| ------------------------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `FOUNDRY_URL`            | `http://localhost:30000`                | URL of the running Foundry world, including its route prefix if configured. Use localhost for a local world or HTTPS for a remote one. |
+| `FOUNDRY_USER`           | `Claude`                                | Foundry account for the headless browser.                                                                                              |
+| `FOUNDRY_PASSWORD_FILE`  | `~/.config/foundry-mcp/claude-password` | Plain-text password file readable by the server user. `FOUNDRY_PASSWORD` takes precedence when set.                                    |
+| `CHROME_PATH`            | `/usr/bin/chromium`                     | Path to the Chromium executable.                                                                                                       |
+| `FOUNDRY_MCP_AUTOCLIENT` | `1`                                     | Set to `0` to require a manually connected GM browser.                                                                                 |
+
+If you set `FOUNDRY_MCP_ORIGINS` explicitly, include the origin of `FOUNDRY_URL`. On the first tool call without a connected bridge, the server waits briefly for a GM browser, then opens its own. Concurrent calls share that browser. You can keep playing from another browser or device under your own account. Pass `sceneId` when you want the scene you are viewing. Without it, the tools use the connected browser's viewed scene or the world's active scene. The server closes its headless browser when it exits.
+
 ## Features
 
 An MCP client such as Claude Code can:

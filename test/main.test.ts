@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { FakeBridge } from "./helpers.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const PRINT_TOKEN = fileURLToPath(new URL("../src/print-token.ts", import.meta.url));
@@ -22,7 +23,13 @@ afterEach(() => {
 
 function run(env: Record<string, string>, script = MAIN) {
   const child = spawn(process.execPath, [script], {
-    env: { ...process.env, FOUNDRY_MCP_PORT: "0", FOUNDRY_MCP_TOKEN_FILE: TOKEN_FILE, ...env },
+    env: {
+      ...process.env,
+      FOUNDRY_MCP_AUTOCLIENT: "0",
+      FOUNDRY_MCP_PORT: "0",
+      FOUNDRY_MCP_TOKEN_FILE: TOKEN_FILE,
+      ...env
+    },
     stdio: ["pipe", "pipe", "pipe"]
   });
   children.push(child);
@@ -40,6 +47,18 @@ async function waitFor(condition: () => boolean, what: string, timeoutMs = 10_00
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+async function initialize(server: ReturnType<typeof run>) {
+  const send = (message: object) => server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  send({
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } }
+  });
+  await waitFor(() => server.out().includes('"id":1'), "initialize");
+  send({ method: "notifications/initialized" });
+  return send;
 }
 
 describe("main.ts", () => {
@@ -93,6 +112,55 @@ describe("main.ts", () => {
     const [code] = await exited;
     assert.equal(code, 0);
     for (const line of out().split("\n").filter(Boolean)) assert.equal(JSON.parse(line).jsonrpc, "2.0");
+  });
+
+  it("honors MCP cancellation before dispatch to a manual client at the configured Foundry URL", async () => {
+    const origin = "http://localhost:35000";
+    const server = run({
+      FOUNDRY_MCP_AUTOCLIENT: "1",
+      FOUNDRY_URL: `${origin}/foundry`,
+      FOUNDRY_MCP_ORIGINS: ""
+    });
+    const { child, exited, err, out } = server;
+    await waitFor(() => err().includes("MCP server ready"), "startup");
+    assert.match(err(), /allowed origins: http:\/\/localhost:30000, http:\/\/localhost:35000\n/);
+    const port = Number(err().match(/listening on 127\.0\.0\.1:(\d+)/)?.[1]);
+    assert.ok(port > 0, err());
+
+    const send = await initialize(server);
+    send({ id: 2, method: "tools/call", params: { name: "delete_actors", arguments: { ids: ["a1"] } } });
+    send({ method: "notifications/cancelled", params: { requestId: 2 } });
+    send({ id: 3, method: "tools/call", params: { name: "list_scenes", arguments: {} } });
+
+    const dm = await FakeBridge.connect(port, origin);
+    await dm.handshake((await readFile(TOKEN_FILE, "utf8")).trim());
+    await waitFor(() => dm.requests.length > 0, "the surviving call");
+    assert.deepEqual(
+      dm.requests.map((request) => request.method),
+      ["list_scenes"]
+    );
+    await dm.respond(dm.requests[0]!.id, { served: true });
+    await waitFor(() => out().includes('"id":3'), "list_scenes response");
+    assert.doesNotMatch(out(), /"id":2/);
+    child.stdin.end();
+    assert.deepEqual(await exited, [0, null]);
+  });
+
+  it("preserves an explicit origin allowlist for the automatic client", async () => {
+    const server = run({
+      FOUNDRY_MCP_AUTOCLIENT: "1",
+      FOUNDRY_URL: "http://localhost:35000",
+      FOUNDRY_MCP_ORIGINS: "http://localhost:30000"
+    });
+    const { child, exited, err, out } = server;
+    await waitFor(() => err().includes("MCP server ready"), "startup");
+    assert.match(err(), /allowed origins: http:\/\/localhost:30000\n/);
+    const send = await initialize(server);
+    send({ id: 2, method: "tools/call", params: { name: "list_scenes", arguments: {} } });
+    await waitFor(() => out().includes('"id":2'), "a tool error");
+    assert.match(out(), /FOUNDRY_URL origin must be in FOUNDRY_MCP_ORIGINS/);
+    child.stdin.end();
+    assert.deepEqual(await exited, [0, null]);
   });
 
   it("normalises FOUNDRY_MCP_ORIGINS entries and logs the effective allowlist", async () => {

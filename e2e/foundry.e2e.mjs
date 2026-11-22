@@ -121,17 +121,24 @@ const tokenFile = join(tokenDir, "token");
 const token = randomBytes(32).toString("base64url");
 await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
 const client = new Client({ name: "foundry-mcp-e2e", version: "0.0.0" });
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [MAIN],
-  env: {
-    ...process.env,
-    FOUNDRY_MCP_PORT: String(port),
-    FOUNDRY_MCP_ORIGINS: new URL(FOUNDRY_URL).origin,
-    FOUNDRY_MCP_TOKEN_FILE: tokenFile
-  },
-  stderr: "inherit"
-});
+function transportFor(autoClient) {
+  return new StdioClientTransport({
+    command: process.execPath,
+    args: [MAIN],
+    env: {
+      ...process.env,
+      FOUNDRY_MCP_PORT: autoClient ? "0" : String(port),
+      FOUNDRY_MCP_ORIGINS: new URL(FOUNDRY_URL).origin,
+      FOUNDRY_MCP_TOKEN_FILE: tokenFile,
+      FOUNDRY_MCP_AUTOCLIENT: autoClient ? "1" : "0",
+      FOUNDRY_URL,
+      FOUNDRY_USER,
+      FOUNDRY_PASSWORD,
+      CHROME_PATH
+    },
+    stderr: "inherit"
+  });
+}
 const pageLog = [];
 const servedFromModuleDir = new Set();
 let browser;
@@ -139,7 +146,37 @@ let page;
 let sceneId;
 
 try {
-  await client.connect(transport);
+  if (MODULE_DIR) {
+    console.log("SKIP automatic browser check: only the test-controlled browser can serve FOUNDRY_MCP_MODULE_DIR.");
+  } else {
+    await check("the first MCP call opens its own GM browser and that browser renders the map", async () => {
+      const cold = new Client({ name: "foundry-mcp-e2e", version: "0.0.0" });
+      try {
+        await cold.connect(transportFor(true));
+        const { scenes } = await tool(cold, "list_scenes", {});
+        assert(Array.isArray(scenes), "the first tool call did not list the world's scenes");
+        const scene = await tool(cold, "ensure_scene", {
+          name: `foundry-mcp cold start ${randomBytes(8).toString("hex")}`,
+          width: 1000,
+          height: 800,
+          background: { src: "ui/parchment.jpg" }
+        });
+        assert(scene.created, "the temporary scene was not created");
+        try {
+          const content = await tool(cold, "get_scene_image", { sceneId: scene.id, maxSize: 256 });
+          const image = content.find((part) => part.type === "image");
+          const meta = JSON.parse(content.find((part) => part.type === "text").text);
+          assert(meta.background && meta.frame.width === 256, "the rendered frame is missing its map");
+          same(Buffer.from(image.data, "base64").toString("ascii", 8, 12), "WEBP", "the rendered image format");
+        } finally {
+          await tool(cold, "delete_documents", { uuids: [`Scene.${scene.id}`], handMade: true });
+        }
+      } finally {
+        await cold.close();
+      }
+    });
+  }
+  await client.connect(transportFor(false));
 
   browser = await puppeteer.launch({
     executablePath: CHROME_PATH,

@@ -18,7 +18,11 @@ import {
 import { defineTool, folderPath, nonBlank, type ToolSpec } from "./tool-spec.ts";
 
 export interface Bridge {
-  request(method: Method, params: Record<string, unknown>, options?: { timeoutMs?: number }): Promise<unknown>;
+  request(
+    method: Method,
+    params: Record<string, unknown>,
+    options?: { timeoutMs?: number; signal?: AbortSignal }
+  ): Promise<unknown>;
 }
 
 type ToolDef = ToolSpec & { name: Method };
@@ -339,9 +343,12 @@ export function createMcpServer(bridge: Bridge): McpServer {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.input },
-      async (args: unknown) => {
+      async (args: unknown, { signal }) => {
         try {
-          const raw = await bridge.request(tool.name, args as Record<string, unknown>, { timeoutMs: tool.timeoutMs });
+          const raw = await bridge.request(tool.name, args as Record<string, unknown>, {
+            timeoutMs: tool.timeoutMs,
+            signal
+          });
           return tool.toResult(raw);
         } catch (error) {
           return { isError: true, content: [{ type: "text", text: describeFailure(error, tool) }] };
