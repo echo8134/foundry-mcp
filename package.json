@@ -1,6 +1,6 @@
 {
   "name": "foundry-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Local MCP server and Foundry module that let a model work inside a running Foundry world.",
