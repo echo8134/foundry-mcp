@@ -6,10 +6,4 @@
 
 <!-- Which checks did you run, and what did you observe? For a change you tried in Foundry, include the tool call or steps. -->
 
-Release Notes:
-
-<!-- Write one bullet for the release. Start with "Added", "Improved", "Fixed" or "Breaking:".
-     Example: - Added hex grid support to `ensure_scene`.
-     For an internal change, write - N/A. -->
-
--
+<!-- The changelog takes its entry from the PR title. To write a different entry, see "Releases" in the README. -->
