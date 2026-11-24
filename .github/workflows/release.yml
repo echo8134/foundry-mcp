@@ -2,23 +2,52 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: read
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  release:
+  release-please:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # A token of the GitHub App, not GITHUB_TOKEN: a release PR opened with GITHUB_TOKEN starts no checks.
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -26,16 +55,9 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Refuse a tag that is not the module's version
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           version="$(node -p 'require("./module/module.json").version')"
           test "$TAG" = "v$version" || { echo "Tag $TAG does not match module.json version $version."; exit 1; }
-      - name: Collect release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: node scripts/release-notes.mjs "$TAG" > "$RUNNER_TEMP/release-notes.md"
       - name: Pack the module with module.json at the root of the zip
         run: cd module && zip -r -X ../module.zip . && cp module.json ../module.json
       - name: Attest where the release files were built
@@ -44,8 +66,7 @@ jobs:
           subject-path: |
             module.zip
             module.json
-      - name: Publish the release
+      - name: Attach the module to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" module.json module.zip --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag
+        run: gh release upload "$TAG" module.json module.zip
