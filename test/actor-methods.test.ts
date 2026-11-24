@@ -284,15 +284,17 @@ describe("get_schema", () => {
   it("lists the types of each typed document, keeping base only where the system models it", async () => {
     const types = async (document: string) => (await viaTool("get_schema", { document })).types;
     assert.deepEqual(await types("Actor"), ["character", "npc", "vehicle", "group"]);
-    assert.deepEqual(await types("Item"), ["weapon", "feat", "spell", "class"]);
+    assert.deepEqual(await types("Item"), ["weapon", "feat", "spell", "class", "subclass", "race", "background"]);
     assert.deepEqual(await types("ActiveEffect"), ["base", "enchantment"]);
     assert.deepEqual(await types("Activity"), ["attack", "save", "cast", "heal"]);
-    assert.deepEqual(await types("Advancement"), ["HitPoints"]);
+    assert.deepEqual(await types("Advancement"), ["HitPoints", "ItemGrant"]);
   });
 
   it("opens an advancement type with the models of its configuration and value, where the type has them", async () => {
-    const { fields } = await viaTool("get_schema", { document: "Advancement", type: "HitPoints" });
-    assert.deepEqual(fields, { level: "integer, min 0", configuration: "object", value: { hint: "string" } });
+    const hp = await viaTool("get_schema", { document: "Advancement", type: "HitPoints" });
+    const grant = await viaTool("get_schema", { document: "Advancement", type: "ItemGrant" });
+    assert.deepEqual([hp.fields.configuration, hp.fields.value], ["object", "object"]);
+    assert.deepEqual([grant.fields.configuration, grant.fields.value], [{ optional: "boolean" }, "object"]);
   });
 
   it("returns the field tree of a type with its system expanded, collections named and derived fields left out", async () => {

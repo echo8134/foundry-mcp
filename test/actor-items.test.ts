@@ -312,7 +312,7 @@ describe("ensure_actor finding an item", () => {
     [
       "a type the system does not have",
       { name: "Trap Sense", type: "trick" },
-      /^items\[0\]: Unknown item type "trick"\. Use one of: weapon, feat, spell, class\./
+      /^items\[0\]: Unknown item type "trick"\. Use one of: weapon, feat, spell, class, subclass, race, background\./
     ],
     [
       "an unknown field",

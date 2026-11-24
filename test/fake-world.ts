@@ -65,7 +65,7 @@ const USER_ID = "user1";
 
 const DOCUMENT_TYPES = Object.freeze({
   Actor: ["base", "character", "npc", "vehicle", "group"],
-  Item: ["base", "weapon", "feat", "spell", "class"],
+  Item: ["base", "weapon", "feat", "spell", "class", "subclass", "race", "background"],
   ActiveEffect: ["base", "enchantment"]
 });
 
