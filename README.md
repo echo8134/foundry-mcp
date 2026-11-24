@@ -38,16 +38,25 @@ An MCP client such as Claude Code can:
 - create, change and delete documents of every type but settings, a journal entry with its pages in one call, in the world or in an unlocked compendium pack, with the same checks before anything is written
 - read the stored field names of every document type
 
-## Release notes
+## Releases
 
-In a pull request, write one bullet under `Release Notes:`, for example `- Added hex grid support to ensure_scene.` Describe what changes for a GM or an MCP client. Start with `Added`, `Improved`, `Fixed` or `Breaking:` to choose the section. Use `- N/A` for internal changes.
+[release-please](https://github.com/googleapis/release-please) keeps a release PR open against `main`. It raises the version in `package.json`, `package-lock.json` and `module/module.json` and adds the changes to `CHANGELOG.md`. When you merge it, the workflow tags the version, publishes the [GitHub release](https://github.com/echo8134/foundry-mcp/releases) and attaches `module.json` and `module.zip`.
 
-When you push a version tag, the workflow publishes the notes since the previous tag in [GitHub Releases](https://github.com/echo8134/foundry-mcp/releases). For a direct commit it uses the commit subject. For a PR without a release note it uses the PR title. The prefixes `feat:`, `perf:` and `fix:` place these entries under features, improvements and fixes.
+Pull requests are squash merged, so each PR title becomes one commit on `main` and one changelog entry. Titles follow [Conventional Commits](https://www.conventionalcommits.org/): `feat:` lands under features, `fix:` under bug fixes, `feat!:` or `fix!:` marks a breaking change. `docs:`, `test:`, `refactor:`, `ci:` and `chore:` do not appear in the changelog.
 
-With `gh` signed in, you can preview the notes for an existing tag locally.
+To write a different entry than the title, or several, put them in the PR description:
+
+```text
+BEGIN_COMMIT_OVERRIDE
+feat: add hex grid support to ensure_scene
+fix: keep refused region destinations pending
+END_COMMIT_OVERRIDE
+```
+
+To check that a downloaded module was built by this repository's workflow:
 
 ```sh
-GITHUB_REPOSITORY=echo8134/foundry-mcp node scripts/release-notes.mjs v0.6.0
+gh attestation verify module.zip -R echo8134/foundry-mcp
 ```
 
 ## License
