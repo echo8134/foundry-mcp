@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/echo8134/foundry-mcp/compare/v0.7.0...v0.7.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **module:** allow writing recorded dnd5e advancement values ([#13](https://github.com/echo8134/foundry-mcp/issues/13)) ([8448bb4](https://github.com/echo8134/foundry-mcp/commit/8448bb40ea08ca12e94c5824ff6f218a3a645cec))
+
 ## [0.7.0](https://github.com/echo8134/foundry-mcp/compare/v0.6.0...v0.7.0) (2026-11-24)
 
 
