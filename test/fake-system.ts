@@ -103,13 +103,28 @@ export class TypeDataField5e extends ObjectField {
   }
 }
 export class AdvancementDataField extends TypeDataField5e {
-  constructor(typeModel?: { schema: SchemaField }) {
-    super();
-    this.typeModel = typeModel;
-  }
   getModelForType() {
     return this.typeModel;
   }
+}
+/** dnd5e 6.1: HitPoints and ItemGrant store their values as plain objects. Only ItemGrant models its configuration. */
+function advancement(typeName: string, configuration?: SchemaField) {
+  const advancementType = { typeName };
+  return {
+    documentClass: {
+      schema: new SchemaField({
+        _id: new DocumentIdField(),
+        type: new StringField(),
+        level: new NumberField({ integer: true, min: 0 }),
+        configuration: new AdvancementDataField({
+          advancementType,
+          name: "configuration",
+          typeModel: configuration && { schema: configuration }
+        }),
+        value: new AdvancementDataField({ advancementType, name: "value" })
+      })
+    }
+  };
 }
 const dnd5e = () => (globalThis as Record<string, any>).CONFIG?.DND5E;
 export class ActivitiesField extends MappingField {
@@ -435,7 +450,10 @@ export function systemConfig() {
             levels: new NumberField({ integer: true, min: 0, initial: 1 }),
             advancement: new AdvancementCollectionField()
           })
-        }
+        },
+        subclass: { schema: new SchemaField({ advancement: new AdvancementCollectionField() }) },
+        race: { schema: new SchemaField({ advancement: new AdvancementCollectionField() }) },
+        background: { schema: new SchemaField({ advancement: new AdvancementCollectionField() }) }
       }
     },
     ActiveEffect: {
@@ -481,15 +499,8 @@ export function systemConfig() {
         }
       },
       advancementTypes: {
-        HitPoints: {
-          documentClass: {
-            schema: new SchemaField({
-              level: new NumberField({ integer: true, min: 0 }),
-              configuration: new AdvancementDataField(),
-              value: new AdvancementDataField({ schema: new SchemaField({ hint: new StringField() }) })
-            })
-          }
-        }
+        HitPoints: advancement("HitPoints"),
+        ItemGrant: advancement("ItemGrant", new SchemaField({ optional: new BooleanField() }))
       },
       abilities: { str: { label: "Strength", abbreviation: "str" }, dex: { label: "Dexterity" } },
       weaponTypes: { simpleM: "Simple Melee", martialR: "Martial Ranged" },

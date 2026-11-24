@@ -4,6 +4,7 @@
 // `initialKeysOnly` and `getModelForType`.
 
 import { isPlainObject } from "./data-diff.mjs";
+import { getPath } from "./paths.mjs";
 import { classChain, initialKeys } from "./schema.mjs";
 
 /**
@@ -13,6 +14,7 @@ import { classChain, initialKeys } from "./schema.mjs";
  *   | {path: string, problem: "reserved", key: string}
  *   | {path: string, problem: "variant", types: string[]}
  *   | {path: string, problem: "model", type: string | undefined}
+ *   | {path: string, problem: "object" | "hitPoints"}
  *   | {path: string, problem: "unchecked"}
  *   | {path: string, problem: "embedded"}
  *   | {path: string, problem: "list"}} FieldProblem
@@ -21,13 +23,13 @@ import { classChain, initialKeys } from "./schema.mjs";
  * @typedef {(entry: unknown, field: any, heldType?: string) => object | null | undefined} SchemaFor the schema to check
  *   a given entry against, or nothing when the entry names no type it knows. It gets the field too, because the class
  *   name alone does not tell the fields apart: dnd5e's activities and advancements are both maps of TypeDataField5e.
- *   `heldType` is the type of the behavior the entry is the config of, which has no type of its own.
+ *   `heldType` is the type supplied by the containing behavior, or by the stored advancement on a partial update.
  */
 /** @typedef {{documentName: string, path: string, data: Record<string, unknown>}} GivenDocument a document given inside the data of another: its document name, where it lies, and its own data */
 /**
  * @typedef {{type?: string, heldType?: string, schemaFor: Readonly<Record<string, SchemaFor>>, problems: FieldProblem[],
  *   html: Set<string>, idArrays: Set<string>, documents: GivenDocument[], embedded?: boolean,
- *   inEmbedded?: boolean}} Walk
+ *   inEmbedded?: boolean, stored?: object}} Walk
  *   `html` collects the paths of the leaves that lie on an HTMLField, `idArrays` those of the lists whose elements
  *   are each given an `_id` of their own, and `documents` the documents the walk went into. Without `embedded` an
  *   embedded document in the data is a problem. `inEmbedded` is set below one, where the type comes from the data and
@@ -113,7 +115,7 @@ function embeddedWalk(schema, documentName, value, path, walk) {
   if (!isPlainObject(value)) return null;
   walk.documents.push({ documentName, path, data: value });
   const type = typeof value.type === "string" ? value.type : initialTypeOf(schema);
-  return { ...walk, type, heldType: undefined, inEmbedded: true };
+  return { ...walk, type, heldType: undefined, stored: undefined, inEmbedded: true };
 }
 
 /** @param {any} field @param {unknown} value @param {string} path @param {Walk} walk */
@@ -124,6 +126,21 @@ function checkSchema(field, value, path, walk) {
     if (!inner) walk.problems.push({ path: join(path, key), problem: "unknown" });
     else if (inner.persisted === false) walk.problems.push({ path: join(path, key), problem: "derived" });
     else check(inner, child, join(path, key), walk);
+  }
+}
+
+/** @param {any} field @param {unknown} value @param {string} path @param {Walk} walk */
+function checkAdvancementData(field, value, path, walk) {
+  if (!isPlainObject(value)) return void walk.problems.push({ path, problem: "object" });
+  if (field.name !== "value" || field.advancementType?.typeName !== "HitPoints") return;
+  for (const [level, roll] of plainEntries(value)) {
+    if (
+      !/^[1-9]\d*$/.test(level) ||
+      !Number.isSafeInteger(Number(level)) ||
+      (roll !== "max" && roll !== "avg" && !Number.isInteger(roll))
+    ) {
+      walk.problems.push({ path: join(path, level), problem: "hitPoints" });
+    }
   }
 }
 
@@ -139,9 +156,13 @@ const STRUCTURES = Object.freeze({
   TypedObjectField: (field, value, path, walk) => {
     if (!isPlainObject(value)) return;
     const keys = field.initialKeysOnly === true ? initialKeys(field.initialKeys) : null;
+    const stored =
+      walk.stored && classChain(field).includes("AdvancementCollectionField") ? getPath(walk.stored, path) : undefined;
     for (const [key, child] of plainEntries(value)) {
       if (keys && !keys.includes(key)) walk.problems.push({ path: join(path, key), problem: "key", keys });
-      else check(field.element, child, join(path, key), walk);
+      else if (isPlainObject(child) && child.type === undefined && typeof stored?.[key]?.type === "string") {
+        check(field.element, child, join(path, key), { ...walk, heldType: stored[key].type });
+      } else check(field.element, child, join(path, key), walk);
     }
   },
   // The actor tools take embedded documents such as items and effects through inputs of their own. A walk with
@@ -223,6 +244,9 @@ const STRUCTURES = Object.freeze({
     if (!schemaFor) return void walk.problems.push({ path, problem: "unchecked" });
     const schema = schemaFor(value, field, walk.heldType);
     if (schema) return check(schema, value, path, { ...walk, heldType: undefined });
+    // An advancement binds configuration and value to its class. dnd5e stores either as an object when the class
+    // defines no model for that field (module/data/fields/advancement-data-field.mjs).
+    if (name === "AdvancementDataField") return checkAdvancementData(field, value, path, walk);
     const type = walk.heldType ?? (isPlainObject(value) && typeof value.type === "string" ? value.type : undefined);
     walk.problems.push({ path, problem: "model", type });
   },
@@ -230,7 +254,7 @@ const STRUCTURES = Object.freeze({
 });
 
 /**
- * @typedef {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>, embedded?: boolean}} WalkOptions
+ * @typedef {{type?: string, schemaFor?: Readonly<Record<string, SchemaFor>>, embedded?: boolean, stored?: object}} WalkOptions
  *   `type` is the document type, which picks the data model of a TypeDataField such as `system`. `schemaFor` maps the
  *   class name of a dnd5e TypeDataField5e, or of a class that extends it, to the schema of each given entry; without
  *   one, any data below such a field is the problem `unchecked`. With `embedded` the walk goes on into the embedded
@@ -241,10 +265,11 @@ const STRUCTURES = Object.freeze({
  * @param {WalkOptions} options
  * @returns {Walk}
  */
-const newWalk = ({ type, schemaFor = {}, embedded }) => ({
+const newWalk = ({ type, schemaFor = {}, embedded, stored }) => ({
   type,
   schemaFor,
   embedded,
+  stored,
   problems: [],
   html: new Set(),
   idArrays: new Set(),
@@ -346,6 +371,12 @@ export function explainFieldProblems(problems) {
   }
   if (paths("unknown").length > 0) sentences.push(`No such field: ${paths("unknown").join(", ")}.`);
   if (paths("derived").length > 0) sentences.push(`Derived, never stored: ${paths("derived").join(", ")}.`);
+  if (paths("object").length > 0) sentences.push(`Give an object for ${paths("object").join(", ")}.`);
+  if (paths("hitPoints").length > 0) {
+    sentences.push(
+      `Invalid HitPoints entry: ${paths("hitPoints").join(", ")}. Use positive level keys with an integer, "max" or "avg" for each level.`
+    );
+  }
   if (paths("embedded").length > 0) {
     sentences.push(
       `Not taken inside the data: ${paths("embedded").join(", ")}. Embedded documents such as items and effects are given through the tool's own inputs for them.`

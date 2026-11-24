@@ -66,9 +66,12 @@ export function kindOf(documentName) {
  * How the schema walk reads the data of a document of a type. An entry below a dnd5e TypeDataField5e is checked by
  * the data model that field picks for it, wherever the system put such a field: in dnd5e 6.1.0 only an item's
  * activities and advancement hold one. With `embedded` the walk goes on into the embedded documents given in the data.
+ * @param {string | undefined} type
+ * @param {boolean} [embedded]
+ * @param {object} [stored] the document source for an update that leaves an advancement's type out
  * @returns {import("./field-check.mjs").WalkOptions}
  */
-export const walkOf = (type, embedded = false) => ({ type, schemaFor: TYPED_ENTRY_SCHEMAS, embedded });
+export const walkOf = (type, embedded = false, stored) => ({ type, schemaFor: TYPED_ENTRY_SCHEMAS, embedded, stored });
 
 const UNWRITTEN = "Nothing was written.";
 
@@ -149,10 +152,10 @@ function ownFlagsGiven(kind, asked) {
  * The given data and the entries to remove, against the fields the document stores. Reads only.
  * @param {{document: string, ownFlags: readonly string[], alsoListed: string}} kind
  * @param {Record<string, any>} asked
- * @param {{remove?: readonly string[], type?: string, where?: string, embedded?: boolean}} [options] with `embedded`
+ * @param {{remove?: readonly string[], type?: string, where?: string, embedded?: boolean, stored?: object}} [options] with `embedded`
  *   the embedded documents given inside the data are checked too, and without it refused
  */
-export function checkAsked(kind, asked, { remove = [], type, where = "", embedded = false } = {}) {
+export function checkAsked(kind, asked, { remove = [], type, where = "", embedded = false, stored } = {}) {
   const given = ownFlagsGiven(kind, asked);
   if (given.length > 0) {
     throw refuse(
@@ -160,7 +163,7 @@ export function checkAsked(kind, asked, { remove = [], type, where = "", embedde
       where
     );
   }
-  const problems = fieldProblems(schemaOf(kind), asked, walkOf(type, embedded));
+  const problems = fieldProblems(schemaOf(kind), asked, walkOf(type, embedded, stored));
   if (problems.length > 0) {
     const ofType = type === undefined ? "" : ` and type ${type}`;
     throw refuse(
@@ -206,8 +209,8 @@ function checkRemoval(kind, document, remove, where, advice) {
  * names further leaves that say the same in another spelling.
  * @returns {import("./data-diff.mjs").Asked}
  */
-function writeOf(kind, wanted, { remove, type, given = wanted, embedded = false, same }) {
-  const html = sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded));
+function writeOf(kind, wanted, { remove, type, given = wanted, embedded = false, stored, same }) {
+  const html = sameHtml(schemaOf(kind), given, canonicalHtml, walkOf(type, embedded, stored));
   return { wanted, remove, same: same ? (path, a, b) => html(path, a, b) || same(path, a, b) : html };
 }
 
@@ -226,7 +229,7 @@ function writeOf(kind, wanted, { remove, type, given = wanted, embedded = false,
  */
 export async function planUpdate(kind, document, asked, { remove = [], where = "", advice = "", same } = {}) {
   const { type } = document;
-  checkAsked(kind, asked, { remove, type, where });
+  checkAsked(kind, asked, { remove, type, where, stored: document._source });
   let wanted;
   try {
     wanted = cleanedChanges(document, asked);
@@ -236,7 +239,7 @@ export async function planUpdate(kind, document, asked, { remove = [], where = "
   checkKeptAsGiven(asked, wanted, where, same);
   if (wanted.img !== document._source.img) await checkImage(wanted.img, where);
   checkRemoval(kind, document, remove, where, advice);
-  return writeOf(kind, wanted, { remove, type, same });
+  return writeOf(kind, wanted, { remove, type, stored: document._source, same });
 }
 
 /**

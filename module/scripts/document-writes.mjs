@@ -185,7 +185,7 @@ async function planChange({ uuid, data: given = {}, remove = [] }, where) {
   const write = await planUpdate(kind, document, asked, { remove, where });
   // Asked of what the update writes: a field given as it is stored is no part of it.
   const { changes } = diffData(write.wanted, document._source, write.same);
-  refuseRuledWithin(cls, changes, walkOf(document.type), where);
+  refuseRuledWithin(cls, changes, walkOf(document.type, false, document._source), where);
   return { document, write: { ...write, unseen: secretsGiven(name, write.wanted) } };
 }
 

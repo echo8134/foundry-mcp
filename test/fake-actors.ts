@@ -312,6 +312,10 @@ export function fakeActors(env: Env) {
     };
     const collection = liveCollection(effects, (id) => effectDocument(recordOf(effects, id), item));
     Object.defineProperty(item, "effects", { get: collection });
+    if (parent) {
+      item.update = async (changes: Source) =>
+        (await parent.updateEmbeddedDocuments("Item", [{ _id: item.id, ...changes }]))[0];
+    }
     checkable(item, kinds.Item, read);
     embedded(item, { ActiveEffect: effects });
     return item;
